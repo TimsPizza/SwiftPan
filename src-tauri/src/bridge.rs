@@ -28,15 +28,22 @@ pub async fn r2_sanity_check() -> SpResult<()> {
 }
 
 #[tauri::command]
-pub async fn upload_new(_params: NewUploadParams) -> SpResult<String> { Err(err_not_implemented("upload_new")) }
+pub async fn upload_new(params: NewUploadParams) -> SpResult<String> { crate::upload::start_upload(params).await }
+// Implemented below
 
 #[tauri::command]
 pub async fn upload_ctrl(_transfer_id: String, _action: String) -> SpResult<()> {
-  Err(err_not_implemented("upload_ctrl"))
+  match _action.as_str() {
+    "pause" => crate::upload::pause(&_transfer_id),
+    "resume" => crate::upload::resume(&_transfer_id),
+    "cancel" => crate::upload::cancel(&_transfer_id),
+    _ => Err(err_not_implemented("upload_ctrl action")),
+  }
 }
 
 #[tauri::command]
-pub async fn upload_status(_transfer_id: String) -> SpResult<UploadStatus> { Err(err_not_implemented("upload_status")) }
+pub async fn upload_status(transfer_id: String) -> SpResult<UploadStatus> { crate::upload::status(&transfer_id) }
+// Implemented below
 
 #[tauri::command]
 pub async fn download_new(params: NewDownloadParams) -> SpResult<String> { crate::download::start_download(params).await }
