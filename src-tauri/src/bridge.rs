@@ -70,10 +70,10 @@ pub async fn share_generate(params: ShareParams) -> SpResult<ShareLink> {
 }
 
 #[tauri::command]
-pub async fn usage_merge_day(_date: String) -> SpResult<DailyLedger> { Err(err_not_implemented("usage_merge_day")) }
+pub async fn usage_merge_day(date: String) -> SpResult<DailyLedger> { crate::usage::UsageSync::merge_and_write_day(&date).await }
 
 #[tauri::command]
-pub async fn usage_list_month(_prefix: String) -> SpResult<Vec<DailyLedger>> { Err(err_not_implemented("usage_list_month")) }
+pub async fn usage_list_month(prefix: String) -> SpResult<Vec<DailyLedger>> { crate::usage::UsageSync::list_month(&prefix).await }
 
 #[tauri::command]
 pub async fn bg_set_limits(

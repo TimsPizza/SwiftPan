@@ -187,3 +187,33 @@ pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<()> {
     .map_err(|e| SpError { kind: ErrorKind::RetryableNet, message: format!("DeleteObject: {e}"), retry_after_ms: Some(500), context: None, at: chrono::Utc::now().timestamp_millis() })?;
   Ok(())
 }
+
+pub async fn get_object_bytes(client: &R2Client, key: &str) -> SpResult<(Vec<u8>, Option<String>)> {
+  let resp = client
+    .s3
+    .get_object()
+    .bucket(&client.bucket)
+    .key(key)
+    .send()
+    .await
+    .map_err(|e| SpError { kind: ErrorKind::RetryableNet, message: format!("GetObject: {e}"), retry_after_ms: Some(500), context: None, at: chrono::Utc::now().timestamp_millis() })?;
+  let etag = resp.e_tag().map(|s| s.trim_matches('"').to_string());
+  let data = resp.body.collect().await.map_err(|e| SpError { kind: ErrorKind::RetryableNet, message: format!("read body: {e}"), retry_after_ms: Some(300), context: None, at: chrono::Utc::now().timestamp_millis() })?.to_vec();
+  Ok((data, etag))
+}
+
+pub async fn put_object_bytes(client: &R2Client, key: &str, bytes: Vec<u8>, if_match: Option<String>, if_none_match: bool) -> SpResult<()> {
+  let mut req = client
+    .s3
+    .put_object()
+    .bucket(&client.bucket)
+    .key(key)
+    .body(s3::primitives::ByteStream::from(bytes));
+  if let Some(tag) = if_match { req = req.if_match(tag); }
+  if if_none_match { req = req.if_none_match("*"); }
+  req
+    .send()
+    .await
+    .map_err(|e| SpError { kind: ErrorKind::RetryableNet, message: format!("PutObject: {e}"), retry_after_ms: Some(500), context: None, at: chrono::Utc::now().timestamp_millis() })?;
+  Ok(())
+}
