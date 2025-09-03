@@ -36,3 +36,4 @@ chacha20poly1305 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "io-util", "time"] }
 aws-sdk-s3 = "1"
 aws-config = "1"
+directories = "5"
