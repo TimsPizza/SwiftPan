@@ -39,15 +39,20 @@ pub async fn upload_ctrl(_transfer_id: String, _action: String) -> SpResult<()> 
 pub async fn upload_status(_transfer_id: String) -> SpResult<UploadStatus> { Err(err_not_implemented("upload_status")) }
 
 #[tauri::command]
-pub async fn download_new(_params: NewDownloadParams) -> SpResult<String> { Err(err_not_implemented("download_new")) }
+pub async fn download_new(params: NewDownloadParams) -> SpResult<String> { crate::download::start_download(params).await }
 
 #[tauri::command]
-pub async fn download_ctrl(_transfer_id: String, _action: String) -> SpResult<()> {
-  Err(err_not_implemented("download_ctrl"))
+pub async fn download_ctrl(transfer_id: String, action: String) -> SpResult<()> {
+  match action.as_str() {
+    "pause" => crate::download::pause(&transfer_id),
+    "resume" => crate::download::resume(&transfer_id),
+    "cancel" => crate::download::cancel(&transfer_id),
+    _ => Err(err_not_implemented("download_ctrl action")),
+  }
 }
 
 #[tauri::command]
-pub async fn download_status(_transfer_id: String) -> SpResult<DownloadStatus> { Err(err_not_implemented("download_status")) }
+pub async fn download_status(transfer_id: String) -> SpResult<DownloadStatus> { crate::download::status(&transfer_id) }
 
 #[tauri::command]
 pub async fn share_generate(params: ShareParams) -> SpResult<ShareLink> {
