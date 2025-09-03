@@ -18,6 +18,7 @@ pub fn run() {
       crate::bridge::usage_list_month,
       crate::bridge::bg_set_limits,
       crate::bridge::bg_global,
+      crate::bridge::download_now,
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

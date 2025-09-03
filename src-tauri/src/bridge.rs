@@ -4,6 +4,7 @@ use crate::upload::{NewUploadParams, UploadStatus};
 use crate::download::{NewDownloadParams, DownloadStatus};
 use crate::share::{ShareLink, ShareParams};
 use crate::r2_client;
+use tokio::io::AsyncWriteExt;
 
 #[tauri::command]
 pub async fn vault_status() -> SpResult<VaultStatus> { CredentialVault::status() }
@@ -73,4 +74,30 @@ pub async fn bg_set_limits(
 #[tauri::command]
 pub async fn bg_global(_action: String) -> SpResult<()> {
   Err(err_not_implemented("bg_global"))
+}
+
+// Temporary utility for early testing: direct download to file (non-resumable)
+#[tauri::command]
+pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
+  let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+  let client = r2_client::build_client(&bundle.r2).await?;
+  let resp = client
+    .s3
+    .get_object()
+    .bucket(&client.bucket)
+    .key(&key)
+    .send()
+    .await
+    .map_err(|e| SpError {
+      kind: ErrorKind::NotRetriable,
+      message: format!("GetObject failed: {e}"),
+      retry_after_ms: None,
+      context: None,
+      at: chrono::Utc::now().timestamp_millis(),
+    })?;
+  let mut body = resp.body.into_async_read();
+  let mut file = tokio::fs::File::create(&dest_path).await.map_err(|e| SpError { kind: ErrorKind::NotRetriable, message: format!("open dest failed: {e}"), retry_after_ms: None, context: None, at: chrono::Utc::now().timestamp_millis() })?;
+  tokio::io::copy(&mut body, &mut file).await.map_err(|e| SpError { kind: ErrorKind::RetryableNet, message: format!("stream copy failed: {e}"), retry_after_ms: Some(500), context: None, at: chrono::Utc::now().timestamp_millis() })?;
+  file.flush().await.ok();
+  Ok(())
 }
