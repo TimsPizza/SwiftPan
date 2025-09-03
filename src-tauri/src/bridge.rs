@@ -101,3 +101,21 @@ pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
   file.flush().await.ok();
   Ok(())
 }
+
+#[tauri::command]
+pub async fn list_objects(prefix: Option<String>, token: Option<String>, max_keys: Option<i32>) -> SpResult<crate::types::ListPage> {
+  let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+  let client = r2_client::build_client(&bundle.r2).await?;
+  let p = prefix.unwrap_or_else(|| "".into());
+  r2_client::list_objects(&client, &p, token, max_keys.unwrap_or(1000)).await
+}
+
+#[tauri::command]
+pub async fn delete_object(key: String) -> SpResult<()> {
+  if key.starts_with(crate::types::ANALYTICS_PREFIX) {
+    return Err(SpError { kind: ErrorKind::NotRetriable, message: "deleting analytics files is prohibited".into(), retry_after_ms: None, context: None, at: chrono::Utc::now().timestamp_millis() });
+  }
+  let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+  let client = r2_client::build_client(&bundle.r2).await?;
+  r2_client::delete_object(&client, &key).await
+}

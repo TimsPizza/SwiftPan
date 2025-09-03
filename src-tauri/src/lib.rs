@@ -19,6 +19,8 @@ pub fn run() {
       crate::bridge::bg_set_limits,
       crate::bridge::bg_global,
       crate::bridge::download_now,
+      crate::bridge::list_objects,
+      crate::bridge::delete_object,
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

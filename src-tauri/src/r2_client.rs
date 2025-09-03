@@ -1,6 +1,7 @@
 use crate::types::*;
 use aws_config::Region;
 use aws_sdk_s3 as s3;
+use aws_sdk_s3::types::Object;
 
 pub struct R2Client {
   pub s3: s3::Client,
@@ -129,4 +130,70 @@ pub async fn presign_get_url(
   let url = presigned.uri().to_string();
   let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
   Ok((url, expires_at.timestamp_millis()))
+}
+
+pub async fn list_objects(
+  client: &R2Client,
+  prefix: &str,
+  continuation: Option<String>,
+  max_keys: i32,
+) -> SpResult<crate::types::ListPage> {
+  use crate::types::{FileEntry, ANALYTICS_PREFIX};
+  let mut req = client
+    .s3
+    .list_objects_v2()
+    .bucket(&client.bucket)
+    .prefix(prefix)
+    .delimiter("/")
+    .max_keys(max_keys);
+  if let Some(tok) = continuation.clone() {
+    req = req.continuation_token(tok);
+  }
+  let out = req
+    .send()
+    .await
+    .map_err(|e| SpError { kind: ErrorKind::RetryableNet, message: format!("ListObjectsV2: {e}"), retry_after_ms: Some(500), context: None, at: chrono::Utc::now().timestamp_millis() })?;
+
+  let mut items: Vec<FileEntry> = vec![];
+  if let Some(objs) = out.contents() {
+    for o in objs {
+      let key = o.key().unwrap_or_default().to_string();
+      items.push(FileEntry {
+        key: key.clone(),
+        size: o.size().map(|v| v as u64),
+        last_modified_ms: o
+          .last_modified()
+          .and_then(|dt| dt.to_chrono_utc().ok())
+          .map(|t| t.timestamp_millis()),
+        etag: o.e_tag().map(|s| s.trim_matches('"').to_string()),
+        is_prefix: false,
+        protected: key.starts_with(ANALYTICS_PREFIX),
+      });
+    }
+  }
+  if let Some(prefixes) = out.common_prefixes() {
+    for p in prefixes {
+      let k = p.prefix().unwrap_or_default().to_string();
+      items.push(FileEntry { key: k.clone(), size: None, last_modified_ms: None, etag: None, is_prefix: true, protected: k.starts_with(ANALYTICS_PREFIX) });
+    }
+  }
+  // Stable order: prefixes first then objects by name
+  items.sort_by(|a, b| match (a.is_prefix, b.is_prefix) {
+    (true, false) => std::cmp::Ordering::Less,
+    (false, true) => std::cmp::Ordering::Greater,
+    _ => a.key.cmp(&b.key),
+  });
+  Ok(crate::types::ListPage { prefix: prefix.to_string(), items, next_token: out.next_continuation_token().map(|s| s.to_string()) })
+}
+
+pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<()> {
+  client
+    .s3
+    .delete_object()
+    .bucket(&client.bucket)
+    .key(key)
+    .send()
+    .await
+    .map_err(|e| SpError { kind: ErrorKind::RetryableNet, message: format!("DeleteObject: {e}"), retry_after_ms: Some(500), context: None, at: chrono::Utc::now().timestamp_millis() })?;
+  Ok(())
 }

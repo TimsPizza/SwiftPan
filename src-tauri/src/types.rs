@@ -79,6 +79,23 @@ pub struct DailyLedger {
 // Constants
 pub const ANALYTICS_PREFIX: &str = "analytics/daily/"; // hardcoded, protected from user operations
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEntry {
+  pub key: String,
+  pub size: Option<u64>,
+  pub last_modified_ms: Option<i64>,
+  pub etag: Option<String>,
+  pub is_prefix: bool,
+  pub protected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListPage {
+  pub prefix: String,
+  pub items: Vec<FileEntry>,
+  pub next_token: Option<String>,
+}
+
 // Helper to create a standard NotImplemented error
 pub fn err_not_implemented(msg: &str) -> SpError {
   SpError {
@@ -89,4 +106,3 @@ pub fn err_not_implemented(msg: &str) -> SpError {
     at: chrono::Utc::now().timestamp_millis(),
   }
 }
-
