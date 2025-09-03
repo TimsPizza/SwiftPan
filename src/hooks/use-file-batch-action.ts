@@ -1,5 +1,6 @@
 import type { FileItem as File } from "@/lib/api/schemas";
 import { nv } from "@/lib/api/tauriBridge";
+import { downloadDir, join } from "@tauri-apps/api/path";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -89,31 +90,16 @@ export const useFileBatchAction = (
 
     for (const f of targets) {
       try {
-        const pres = await nv.share_generate({ key: f.id, ttl_secs: 3600 });
-        let url: string | null = null;
-        pres.match(
-          (ok) => (url = ok.url),
+        const base = await downloadDir();
+        const dest = await join(base, f.filename || "download");
+        const r = await nv.download_now(f.id, dest);
+        r.match(
+          () => {},
           (e) => {
-            toast.error(
-              `Failed to presign ${f.filename}: ${String((e as any)?.message || e)}`,
-            );
+            throw new Error(String((e as any)?.message || e));
           },
         );
-        if (!url) continue;
-        // Fetch the file data to avoid cross-origin navigation
-        const resp = await fetch(url, { mode: "cors" });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const blob = await resp.blob();
-        const objectUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = objectUrl;
-        a.download = f.filename || "download";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        // Revoke after a short delay to ensure download starts
-        setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
-        // queue sequentially to avoid multiple-download throttling
+        // small delay to avoid UI jank
         await delay(400);
       } catch (e) {
         toast.error(`Failed to download ${f.filename}`);
@@ -123,28 +109,15 @@ export const useFileBatchAction = (
 
   const downloadOne = useCallback(async (file: File) => {
     try {
-      const pres = await nv.share_generate({ key: file.id, ttl_secs: 3600 });
-      let url: string | null = null;
-      pres.match(
-        (ok) => (url = ok.url),
+      const base = await downloadDir();
+      const dest = await join(base, file.filename || "download");
+      const r = await nv.download_now(file.id, dest);
+      r.match(
+        () => {},
         (e) => {
-          toast.error(
-            `Failed to presign ${file.filename}: ${String((e as any)?.message || e)}`,
-          );
+          throw new Error(String((e as any)?.message || e));
         },
       );
-      if (!url) return;
-      const resp = await fetch(url, { mode: "cors" });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const blob = await resp.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = file.filename || "download";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
     } catch (e) {
       toast.error(`Failed to download ${file.filename}`);
     }
