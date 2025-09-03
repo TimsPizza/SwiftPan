@@ -1,5 +1,5 @@
 use crate::types::*;
-use crate::{credential_vault::CredentialVault, r2_client};
+use crate::{r2_client, sp_backend::SpBackend};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,6 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use tauri::Emitter;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +79,11 @@ struct Transfer {
 
 static DL: Lazy<Mutex<HashMap<String, Transfer>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub async fn start_download(params: NewDownloadParams) -> SpResult<String> {
+fn emit_download(app: &tauri::AppHandle, ev: &DownloadEvent) {
+    let _ = app.emit("sp://download_event", ev);
+}
+
+pub async fn start_download(app: tauri::AppHandle, params: NewDownloadParams) -> SpResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let paused = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -89,7 +94,13 @@ pub async fn start_download(params: NewDownloadParams) -> SpResult<String> {
     let expected = params.expected_etag.clone();
 
     {
-        let mut g = DL.lock().unwrap();
+        let mut g = DL.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "download state lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
         g.insert(
             id.clone(),
             Transfer {
@@ -108,8 +119,10 @@ pub async fn start_download(params: NewDownloadParams) -> SpResult<String> {
     }
 
     let id_spawn = id.clone();
+    let app_spawn = app.clone();
     tokio::spawn(async move {
         let res = run_download(
+            &app_spawn,
             &id_spawn,
             &key,
             &dest,
@@ -120,7 +133,7 @@ pub async fn start_download(params: NewDownloadParams) -> SpResult<String> {
         )
         .await;
         if let Err(e) = res {
-            let mut g = DL.lock().unwrap();
+            let mut g = DL.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(t) = g.get_mut(&id_spawn) {
                 t.last_error = Some(e);
             }
@@ -131,6 +144,7 @@ pub async fn start_download(params: NewDownloadParams) -> SpResult<String> {
 }
 
 async fn run_download(
+    app: &tauri::AppHandle,
     id: &str,
     key: &str,
     dest: &PathBuf,
@@ -139,7 +153,13 @@ async fn run_download(
     paused: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
 ) -> SpResult<()> {
-    let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+    emit_download(
+        app,
+        &DownloadEvent::Started {
+            transfer_id: id.to_string(),
+        },
+    );
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
 
     // Head to get size and etag
@@ -161,15 +181,21 @@ async fn run_download(
     let total = head.content_length().map(|v| v as u64);
     let etag = head.e_tag().map(|s| s.trim_matches('"').to_string());
     {
-        let mut g = DL.lock().unwrap();
+        let mut g = DL.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(t) = g.get_mut(id) {
             t.bytes_total = total;
             t.observed_etag = etag.clone();
         }
     }
 
-    if let (Some(exp), Some(obs)) = (expected_etag, etag.clone()) {
+    if let (Some(exp), Some(obs)) = (expected_etag.as_ref(), etag.as_ref()) {
         if exp != obs {
+            emit_download(
+                app,
+                &DownloadEvent::SourceChanged {
+                    transfer_id: id.to_string(),
+                },
+            );
             return Err(SpError {
                 kind: ErrorKind::SourceChanged,
                 message: "ETag mismatch".into(),
@@ -196,8 +222,20 @@ async fn run_download(
     let total_len = total.unwrap_or(0);
     while cancelled.load(Ordering::Relaxed) == false {
         while paused.load(Ordering::Relaxed) {
+            emit_download(
+                app,
+                &DownloadEvent::Paused {
+                    transfer_id: id.to_string(),
+                },
+            );
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
+        emit_download(
+            app,
+            &DownloadEvent::Resumed {
+                transfer_id: id.to_string(),
+            },
+        );
         if total.is_some() && offset >= total_len {
             break;
         }
@@ -211,22 +249,22 @@ async fn run_download(
         } else {
             format!("bytes={}-{}", offset, offset + chunk - 1)
         };
-        let get = client
+        let mut get = client
             .s3
             .get_object()
             .bucket(&client.bucket)
             .key(key)
-            .range(range)
-            .if_match(etag.clone().unwrap_or_default())
-            .send()
-            .await
-            .map_err(|e| SpError {
-                kind: ErrorKind::RetryableNet,
-                message: format!("GetObject: {e}"),
-                retry_after_ms: Some(500),
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
+            .range(range);
+        if let Some(exp) = expected_etag.clone() {
+            get = get.if_match(exp);
+        }
+        let get = get.send().await.map_err(|e| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("GetObject: {e}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
         let mut body = get.body.into_async_read();
         let copied = tokio::io::copy(&mut body, &mut file)
             .await
@@ -238,8 +276,16 @@ async fn run_download(
                 at: chrono::Utc::now().timestamp_millis(),
             })?;
         offset = offset.saturating_add(copied as u64);
+        emit_download(
+            app,
+            &DownloadEvent::ChunkDone {
+                transfer_id: id.to_string(),
+                range_start: offset.saturating_sub(copied as u64),
+                len: copied as u64,
+            },
+        );
         {
-            let mut g = DL.lock().unwrap();
+            let mut g = DL.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(t) = g.get_mut(id) {
                 t.bytes_done = offset;
             }
@@ -252,6 +298,19 @@ async fn run_download(
     file.flush().await.ok();
     if cancelled.load(Ordering::Relaxed) {
         let _ = tokio::fs::remove_file(&part_path).await;
+        emit_download(
+            app,
+            &DownloadEvent::Failed {
+                transfer_id: id.to_string(),
+                error: SpError {
+                    kind: ErrorKind::Cancelled,
+                    message: "cancelled".into(),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                },
+            },
+        );
         return Err(SpError {
             kind: ErrorKind::Cancelled,
             message: "cancelled".into(),
@@ -269,13 +328,31 @@ async fn run_download(
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    emit_download(
+        app,
+        &DownloadEvent::Completed {
+            transfer_id: id.to_string(),
+        },
+    );
     Ok(())
 }
 
-pub fn pause(transfer_id: &str) -> SpResult<()> {
-    let g = DL.lock().unwrap();
+pub fn pause(app: &tauri::AppHandle, transfer_id: &str) -> SpResult<()> {
+    let g = DL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "download state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     if let Some(t) = g.get(transfer_id) {
         t.paused.store(true, Ordering::Relaxed);
+        emit_download(
+            app,
+            &DownloadEvent::Paused {
+                transfer_id: transfer_id.to_string(),
+            },
+        );
         Ok(())
     } else {
         Err(SpError {
@@ -287,10 +364,22 @@ pub fn pause(transfer_id: &str) -> SpResult<()> {
         })
     }
 }
-pub fn resume(transfer_id: &str) -> SpResult<()> {
-    let g = DL.lock().unwrap();
+pub fn resume(app: &tauri::AppHandle, transfer_id: &str) -> SpResult<()> {
+    let g = DL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "download state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     if let Some(t) = g.get(transfer_id) {
         t.paused.store(false, Ordering::Relaxed);
+        emit_download(
+            app,
+            &DownloadEvent::Resumed {
+                transfer_id: transfer_id.to_string(),
+            },
+        );
         Ok(())
     } else {
         Err(SpError {
@@ -302,10 +391,29 @@ pub fn resume(transfer_id: &str) -> SpResult<()> {
         })
     }
 }
-pub fn cancel(transfer_id: &str) -> SpResult<()> {
-    let g = DL.lock().unwrap();
+pub fn cancel(app: &tauri::AppHandle, transfer_id: &str) -> SpResult<()> {
+    let g = DL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "download state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     if let Some(t) = g.get(transfer_id) {
         t.cancelled.store(true, Ordering::Relaxed);
+        emit_download(
+            app,
+            &DownloadEvent::Failed {
+                transfer_id: transfer_id.to_string(),
+                error: SpError {
+                    kind: ErrorKind::Cancelled,
+                    message: "cancelled".into(),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                },
+            },
+        );
         Ok(())
     } else {
         Err(SpError {
@@ -319,7 +427,13 @@ pub fn cancel(transfer_id: &str) -> SpResult<()> {
 }
 
 pub fn status(transfer_id: &str) -> SpResult<DownloadStatus> {
-    let g = DL.lock().unwrap();
+    let g = DL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "download state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     let t = g.get(transfer_id).ok_or_else(|| SpError {
         kind: ErrorKind::NotRetriable,
         message: "not found".into(),

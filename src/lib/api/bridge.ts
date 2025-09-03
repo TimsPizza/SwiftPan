@@ -9,7 +9,7 @@ export type SpError = {
 };
 
 export type R2Config = { endpoint: string; access_key_id: string; secret_access_key: string; bucket: string; region?: string };
-export type VaultState = { is_unlocked: boolean; unlock_deadline_ms?: number; device_id: string };
+export type BackendState = { is_unlocked: boolean; unlock_deadline_ms?: number; device_id: string };
 export type CredentialBundle = { r2: R2Config; device_id: string; created_at: number };
 
 export type NewUploadParams = { key: string; source_path: string; part_size: number; content_type?: string; content_disposition?: string };
@@ -54,4 +54,3 @@ export type DailyLedger = {
   rev: number;
   updated_at: string;
 };
-

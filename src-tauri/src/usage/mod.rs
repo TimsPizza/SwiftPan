@@ -1,5 +1,5 @@
 use crate::types::*;
-use crate::{credential_vault::CredentialVault, r2_client};
+use crate::{r2_client, sp_backend::SpBackend};
 use directories::ProjectDirs;
 use std::fs;
 use std::path::PathBuf;
@@ -32,8 +32,26 @@ impl UsageSync {
         }
         cur.ingress_bytes += delta.ingress_bytes;
         cur.egress_bytes += delta.egress_bytes;
-        fs::create_dir_all(p.parent().unwrap()).map_err(ioe)?;
-        fs::write(p, serde_json::to_vec(&cur).unwrap()).map_err(ioe)?;
+        // Ensure parent dir exists
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).map_err(ioe)?;
+        } else {
+            return Err(SpError {
+                kind: ErrorKind::NotRetriable,
+                message: "invalid usage delta path".into(),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+        let cur_bytes = serde_json::to_vec(&cur).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("serialize usage delta failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        fs::write(p, cur_bytes).map_err(ioe)?;
         Ok(())
     }
 
@@ -55,7 +73,7 @@ impl UsageSync {
             }
         };
 
-        let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+        let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
         let client = r2_client::build_client(&bundle.r2).await?;
         let key = format!("{}{}.json", ANALYTICS_PREFIX, date);
 
@@ -73,7 +91,13 @@ impl UsageSync {
                 rev: 1,
                 updated_at: chrono::Utc::now().to_rfc3339(),
             })
-            .unwrap(),
+            .map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("serialize empty ledger failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?,
             None,
             true,
         )
@@ -103,14 +127,14 @@ impl UsageSync {
         day.rev += 1;
 
         // PUT If-Match
-        r2_client::put_object_bytes(
-            &client,
-            &key,
-            serde_json::to_vec(&day).unwrap(),
-            etag,
-            false,
-        )
-        .await?;
+        let day_bytes = serde_json::to_vec(&day).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("serialize merged ledger failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        r2_client::put_object_bytes(&client, &key, day_bytes, etag, false).await?;
 
         // Clear local
         let _ = fs::remove_file(p);
@@ -119,7 +143,7 @@ impl UsageSync {
 
     pub async fn list_month(prefix: &str) -> SpResult<Vec<DailyLedger>> {
         // Simple: iterate days 01..31 and GET existing
-        let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+        let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
         let client = r2_client::build_client(&bundle.r2).await?;
         let mut out = vec![];
         for day in 1..=31u32 {

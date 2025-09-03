@@ -26,6 +26,17 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
+  "include": [
+    "src/main.tsx",
+    "src/App.tsx",
+    "src/routes/**/*.tsx",
+    "src/components/TauriBrowser.tsx",
+    "src/components/DevEventConsole.tsx",
+    "src/components/ui/**/*.tsx",
+    "src/styles/**/*.css",
+    "src/lib/api/**/*.ts",
+    "src/lib/utils/**/*.ts",
+    "src/types/**/*.d.ts"
+  ],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

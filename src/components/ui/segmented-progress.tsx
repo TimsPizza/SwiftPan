@@ -1,3 +1,4 @@
+import React from "react";
 import { cn } from "@/lib/utils";
 
 type SegmentColor = "primary" | "secondary" | "success" | "warning" | "danger";
@@ -43,7 +44,7 @@ export const SegmentedProgress = ({
     <div className={cn("space-y-2", className)}>
       <div className="bg-muted relative h-2 w-full overflow-hidden rounded-md">
         {/* Capacity backgrounds */}
-        {segments.reduce<JSX.Element[]>((acc, seg, idx) => {
+        {segments.reduce<React.ReactElement[]>((acc, seg, idx) => {
           const segTotal = Math.max(0, seg.max);
           if (total <= 0 || segTotal <= 0) return acc;
           const widthPct = (segTotal / total) * 100;

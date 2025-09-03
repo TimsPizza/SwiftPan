@@ -1,5 +1,5 @@
 use crate::types::*;
-use crate::{credential_vault::CredentialVault, r2_client};
+use crate::{r2_client, sp_backend::SpBackend};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -8,6 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use tauri::Emitter;
 use tokio::io::AsyncReadExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,7 +76,11 @@ struct UTransfer {
 
 static UL: Lazy<Mutex<HashMap<String, UTransfer>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub async fn start_upload(params: NewUploadParams) -> SpResult<String> {
+fn emit_upload(app: &tauri::AppHandle, ev: &UploadEvent) {
+    let _ = app.emit("sp://upload_event", ev);
+}
+
+pub async fn start_upload(app: tauri::AppHandle, params: NewUploadParams) -> SpResult<String> {
     let meta = tokio::fs::metadata(&params.source_path)
         .await
         .map_err(|e| SpError {
@@ -90,7 +95,13 @@ pub async fn start_upload(params: NewUploadParams) -> SpResult<String> {
     let paused = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(AtomicBool::new(false));
     {
-        let mut g = UL.lock().unwrap();
+        let mut g = UL.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "upload state lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
         g.insert(
             id.clone(),
             UTransfer {
@@ -107,10 +118,18 @@ pub async fn start_upload(params: NewUploadParams) -> SpResult<String> {
         );
     }
     let id_spawn = id.clone();
+    let app_spawn = app.clone();
     tokio::spawn(async move {
-        let res = run_upload(&id_spawn, params, paused.clone(), cancelled.clone()).await;
+        let res = run_upload(
+            &app_spawn,
+            &id_spawn,
+            params,
+            paused.clone(),
+            cancelled.clone(),
+        )
+        .await;
         if let Err(e) = res {
-            let mut g = UL.lock().unwrap();
+            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(t) = g.get_mut(&id_spawn) {
                 t.last_error = Some(e);
             }
@@ -120,12 +139,19 @@ pub async fn start_upload(params: NewUploadParams) -> SpResult<String> {
 }
 
 async fn run_upload(
+    app: &tauri::AppHandle,
     id: &str,
     params: NewUploadParams,
     paused: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
 ) -> SpResult<()> {
-    let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+    emit_upload(
+        app,
+        &UploadEvent::Started {
+            transfer_id: id.to_string(),
+        },
+    );
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     let mut file = tokio::fs::File::open(&params.source_path)
         .await
@@ -167,18 +193,33 @@ async fn run_upload(
         if let Some(cd) = params.content_disposition.clone() {
             req = req.content_disposition(cd);
         }
-        req.send().await.map_err(|e| SpError {
+        let send_res = req.send().await.map_err(|e| SpError {
             kind: ErrorKind::RetryableNet,
             message: format!("PutObject: {e}"),
             retry_after_ms: Some(500),
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
-        let mut g = UL.lock().unwrap();
+        let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(t) = g.get_mut(id) {
             t.bytes_done = size;
             t.parts_completed = 1;
         }
+        let _ = send_res; // suppress unused
+        emit_upload(
+            app,
+            &UploadEvent::PartDone {
+                transfer_id: id.to_string(),
+                part_number: 1,
+                etag: String::from(""),
+            },
+        );
+        emit_upload(
+            app,
+            &UploadEvent::Completed {
+                transfer_id: id.to_string(),
+            },
+        );
         return Ok(());
     }
 
@@ -210,8 +251,20 @@ async fn run_upload(
             break;
         }
         while paused.load(Ordering::Relaxed) {
+            emit_upload(
+                app,
+                &UploadEvent::Paused {
+                    transfer_id: id.to_string(),
+                },
+            );
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
+        emit_upload(
+            app,
+            &UploadEvent::Resumed {
+                transfer_id: id.to_string(),
+            },
+        );
         let mut buf = vec![0u8; params.part_size as usize];
         let n = file.read(&mut buf).await.map_err(|e| SpError {
             kind: ErrorKind::RetryableNet,
@@ -244,17 +297,25 @@ async fn run_upload(
         let etag = out.e_tag().map(|s| s.to_string()).unwrap_or_default();
         completed_parts.push(
             aws_sdk_s3::types::CompletedPart::builder()
-                .e_tag(etag)
+                .e_tag(etag.clone())
                 .part_number(part_number)
                 .build(),
         );
         {
-            let mut g = UL.lock().unwrap();
+            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(t) = g.get_mut(id) {
                 t.bytes_done = (t.bytes_done as u64 + n as u64) as u64;
                 t.parts_completed += 1;
             }
         }
+        emit_upload(
+            app,
+            &UploadEvent::PartDone {
+                transfer_id: id.to_string(),
+                part_number: part_number as u32,
+                etag: etag.clone(),
+            },
+        );
         part_number += 1;
     }
 
@@ -267,6 +328,19 @@ async fn run_upload(
             .upload_id(upload_id)
             .send()
             .await;
+        emit_upload(
+            app,
+            &UploadEvent::Failed {
+                transfer_id: id.to_string(),
+                error: SpError {
+                    kind: ErrorKind::Cancelled,
+                    message: "cancelled".into(),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                },
+            },
+        );
         return Err(SpError {
             kind: ErrorKind::Cancelled,
             message: "cancelled".into(),
@@ -296,13 +370,31 @@ async fn run_upload(
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    emit_upload(
+        app,
+        &UploadEvent::Completed {
+            transfer_id: id.to_string(),
+        },
+    );
     Ok(())
 }
 
-pub fn pause(id: &str) -> SpResult<()> {
-    let g = UL.lock().unwrap();
+pub fn pause(app: &tauri::AppHandle, id: &str) -> SpResult<()> {
+    let g = UL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     if let Some(t) = g.get(id) {
         t.paused.store(true, Ordering::Relaxed);
+        emit_upload(
+            app,
+            &UploadEvent::Paused {
+                transfer_id: id.to_string(),
+            },
+        );
         Ok(())
     } else {
         Err(SpError {
@@ -314,10 +406,22 @@ pub fn pause(id: &str) -> SpResult<()> {
         })
     }
 }
-pub fn resume(id: &str) -> SpResult<()> {
-    let g = UL.lock().unwrap();
+pub fn resume(app: &tauri::AppHandle, id: &str) -> SpResult<()> {
+    let g = UL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     if let Some(t) = g.get(id) {
         t.paused.store(false, Ordering::Relaxed);
+        emit_upload(
+            app,
+            &UploadEvent::Resumed {
+                transfer_id: id.to_string(),
+            },
+        );
         Ok(())
     } else {
         Err(SpError {
@@ -329,10 +433,29 @@ pub fn resume(id: &str) -> SpResult<()> {
         })
     }
 }
-pub fn cancel(id: &str) -> SpResult<()> {
-    let g = UL.lock().unwrap();
+pub fn cancel(app: &tauri::AppHandle, id: &str) -> SpResult<()> {
+    let g = UL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     if let Some(t) = g.get(id) {
         t.cancelled.store(true, Ordering::Relaxed);
+        emit_upload(
+            app,
+            &UploadEvent::Failed {
+                transfer_id: id.to_string(),
+                error: SpError {
+                    kind: ErrorKind::Cancelled,
+                    message: "cancelled".into(),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                },
+            },
+        );
         Ok(())
     } else {
         Err(SpError {
@@ -345,7 +468,13 @@ pub fn cancel(id: &str) -> SpResult<()> {
     }
 }
 pub fn status(id: &str) -> SpResult<UploadStatus> {
-    let g = UL.lock().unwrap();
+    let g = UL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     let t = g.get(id).ok_or_else(|| SpError {
         kind: ErrorKind::NotRetriable,
         message: "not found".into(),

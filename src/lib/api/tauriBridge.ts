@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { ResultAsync } from "neverthrow";
 import type { DailyLedger, ShareLink } from "./bridge";
 
 export type ListPage = {
@@ -14,49 +16,85 @@ export type ListPage = {
   next_token?: string;
 };
 
-export async function vault_status() {
-  return invoke("vault_status");
-}
-
-export async function vault_set_manual(bundle: unknown, master_password: string) {
-  return invoke("vault_set_manual", { bundle, masterPassword: master_password });
-}
-
-export async function vault_unlock(master_password: string, hold_ms: number) {
-  return invoke("vault_unlock", { masterPassword: master_password, holdMs: hold_ms });
-}
-
-export async function vault_lock() {
-  return invoke("vault_lock");
-}
-
-export async function r2_sanity_check() {
-  return invoke("r2_sanity_check");
-}
-
-export async function list_objects(prefix = "", token?: string, max_keys = 1000): Promise<ListPage> {
-  return invoke("list_objects", { prefix, token, maxKeys: max_keys }) as Promise<ListPage>;
-}
-
-export async function delete_object(key: string) {
-  return invoke("delete_object", { key });
-}
-
-export async function share_generate(params: { key: string; ttl_secs: number; download_filename?: string }) {
-  return invoke("share_generate", { params }) as Promise<ShareLink>;
-}
-
-export async function download_now(key: string, dest_path: string) {
-  return invoke("download_now", { key, destPath: dest_path });
-}
-
-export async function usage_merge_day(date: string) {
-  return invoke("usage_merge_day", { date }) as Promise<DailyLedger>;
-}
-
-export async function usage_list_month(prefix: string) {
-  return invoke("usage_list_month", { prefix }) as Promise<DailyLedger[]>;
-}
-
 export const ANALYTICS_PREFIX = "analytics/daily/";
 
+// Event subscriptions
+export function onUploadEvent(cb: (event: unknown) => void) {
+  return listen("sp://upload_event", (e) => cb(e.payload));
+}
+export function onDownloadEvent(cb: (event: unknown) => void) {
+  return listen("sp://download_event", (e) => cb(e.payload));
+}
+export function onBackgroundStats(cb: (event: unknown) => void) {
+  return listen("sp://background_stats", (e) => cb(e.payload));
+}
+
+export async function bg_mock_start() {
+  return debugInvoke("bg_mock_start");
+}
+
+async function debugInvoke<T = unknown>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  const start = Date.now();
+  // eslint-disable-next-line no-console
+  console.log(`[invoke] ${cmd}`, args);
+  try {
+    const res = await invoke<T>(cmd, args as any);
+    const ms = Date.now() - start;
+    // eslint-disable-next-line no-console
+    console.log(`[invoke:ok] ${cmd} (${ms}ms)`, res);
+    return res;
+  } catch (e) {
+    const ms = Date.now() - start;
+    // eslint-disable-next-line no-console
+    console.error(`[invoke:err] ${cmd} (${ms}ms)`, e);
+    throw e;
+  }
+}
+
+// neverthrow ResultAsync wrappers (non-breaking; optional usage)
+function resultInvoke<T = unknown>(
+  cmd: string,
+  args?: Record<string, unknown>,
+) {
+  return ResultAsync.fromPromise<T, unknown>(
+    debugInvoke<T>(cmd, args),
+    (e) => e,
+  );
+}
+
+export const nv = {
+  backend_set_credentials: (bundle: unknown, masterPassword: string) =>
+    resultInvoke<void>("backend_set_credentials", {
+      bundle,
+      masterPassword,
+    }),
+  backend_status: () => resultInvoke("backend_status"),
+  vault_set_manual: (bundle: unknown, masterPassword: string) =>
+    resultInvoke<void>("vault_set_manual", {
+      bundle,
+      masterPassword,
+    }),
+  vault_status: () => resultInvoke("vault_status"),
+  r2_sanity_check: () => resultInvoke("r2_sanity_check"),
+  list_objects: (prefix = "", token?: string, max = 1000) =>
+    resultInvoke<ListPage>("list_objects", {
+      prefix,
+      token,
+      maxKeys: max,
+    }),
+  delete_object: (key: string) => resultInvoke<void>("delete_object", { key }),
+  share_generate: (params: {
+    key: string;
+    ttl_secs: number;
+    download_filename?: string;
+  }) => resultInvoke<ShareLink>("share_generate", { params }),
+  download_now: (key: string, dest_path: string) =>
+    resultInvoke<void>("download_now", { key, destPath: dest_path }),
+  usage_merge_day: (date: string) =>
+    resultInvoke<DailyLedger>("usage_merge_day", { date }),
+  usage_list_month: (prefix: string) =>
+    resultInvoke<DailyLedger[]>("usage_list_month", { prefix }),
+};

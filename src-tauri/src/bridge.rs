@@ -1,52 +1,67 @@
-use crate::credential_vault::{
-    CredentialBundle, CredentialVault, VaultExportPackage, VaultState as VaultStatus,
-};
 use crate::download::{DownloadStatus, NewDownloadParams};
 use crate::r2_client;
 use crate::share::{ShareLink, ShareParams};
+use crate::sp_backend::{BackendState as BackendStatus, CredentialBundle, SpBackend};
 use crate::types::*;
 use crate::upload::{NewUploadParams, UploadStatus};
 use tokio::io::AsyncWriteExt;
 
+// Backend status (replaces vault_status)
 #[tauri::command]
-pub async fn vault_status() -> SpResult<VaultStatus> {
-    CredentialVault::status()
+pub async fn backend_status() -> SpResult<BackendStatus> {
+    SpBackend::status()
 }
 
+// Save encrypted credentials (replaces vault_set_manual)
+#[tauri::command]
+pub async fn backend_set_credentials(
+    bundle: CredentialBundle,
+    master_password: String,
+) -> SpResult<()> {
+    SpBackend::set_with_plaintext(bundle, &master_password)
+}
+
+// Legacy shims (no-ops / backwards compatibility)
+#[tauri::command]
+pub async fn vault_status() -> SpResult<BackendStatus> {
+    backend_status().await
+}
 #[tauri::command]
 pub async fn vault_set_manual(bundle: CredentialBundle, master_password: String) -> SpResult<()> {
-    CredentialVault::set_with_plaintext(bundle, &master_password)
+    backend_set_credentials(bundle, master_password).await
 }
-
 #[tauri::command]
-pub async fn vault_unlock(master_password: String, hold_ms: u64) -> SpResult<()> {
-    CredentialVault::unlock(&master_password, hold_ms)
+pub async fn vault_unlock(_master_password: String, _hold_ms: u64) -> SpResult<()> {
+    Ok(())
 }
-
 #[tauri::command]
 pub async fn vault_lock() -> SpResult<()> {
-    CredentialVault::lock()
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn r2_sanity_check() -> SpResult<()> {
-    let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     r2_client::sanity_check(&client, "swiftpan-selftest/").await
 }
 
 #[tauri::command]
-pub async fn upload_new(params: NewUploadParams) -> SpResult<String> {
-    crate::upload::start_upload(params).await
+pub async fn upload_new(app: tauri::AppHandle, params: NewUploadParams) -> SpResult<String> {
+    crate::upload::start_upload(app, params).await
 }
 // Implemented below
 
 #[tauri::command]
-pub async fn upload_ctrl(_transfer_id: String, _action: String) -> SpResult<()> {
+pub async fn upload_ctrl(
+    app: tauri::AppHandle,
+    _transfer_id: String,
+    _action: String,
+) -> SpResult<()> {
     match _action.as_str() {
-        "pause" => crate::upload::pause(&_transfer_id),
-        "resume" => crate::upload::resume(&_transfer_id),
-        "cancel" => crate::upload::cancel(&_transfer_id),
+        "pause" => crate::upload::pause(&app, &_transfer_id),
+        "resume" => crate::upload::resume(&app, &_transfer_id),
+        "cancel" => crate::upload::cancel(&app, &_transfer_id),
         _ => Err(err_not_implemented("upload_ctrl action")),
     }
 }
@@ -58,16 +73,20 @@ pub async fn upload_status(transfer_id: String) -> SpResult<UploadStatus> {
 // Implemented below
 
 #[tauri::command]
-pub async fn download_new(params: NewDownloadParams) -> SpResult<String> {
-    crate::download::start_download(params).await
+pub async fn download_new(app: tauri::AppHandle, params: NewDownloadParams) -> SpResult<String> {
+    crate::download::start_download(app, params).await
 }
 
 #[tauri::command]
-pub async fn download_ctrl(transfer_id: String, action: String) -> SpResult<()> {
+pub async fn download_ctrl(
+    app: tauri::AppHandle,
+    transfer_id: String,
+    action: String,
+) -> SpResult<()> {
     match action.as_str() {
-        "pause" => crate::download::pause(&transfer_id),
-        "resume" => crate::download::resume(&transfer_id),
-        "cancel" => crate::download::cancel(&transfer_id),
+        "pause" => crate::download::pause(&app, &transfer_id),
+        "resume" => crate::download::resume(&app, &transfer_id),
+        "cancel" => crate::download::cancel(&app, &transfer_id),
         _ => Err(err_not_implemented("download_ctrl action")),
     }
 }
@@ -79,7 +98,7 @@ pub async fn download_status(transfer_id: String) -> SpResult<DownloadStatus> {
 
 #[tauri::command]
 pub async fn share_generate(params: ShareParams) -> SpResult<ShareLink> {
-    let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     let (url, expires_at_ms) = r2_client::presign_get_url(
         &client,
@@ -111,10 +130,31 @@ pub async fn bg_global(_action: String) -> SpResult<()> {
     Err(err_not_implemented("bg_global"))
 }
 
+// Start a mock background stats emitter to validate event pipeline
+#[tauri::command]
+pub async fn bg_mock_start(app: tauri::AppHandle) -> SpResult<()> {
+    tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
+        let mut i: u64 = 0;
+        loop {
+            let payload = serde_json::json!({
+                "active_tasks": (i % 3) + 1,
+                "moving_avg_bps": 5_000_000 + (i % 5) * 1_000_000,
+                "cpu_hint": 0.2,
+                "io_hint": 0.4,
+            });
+            let _ = app.emit("sp://background_stats", payload);
+            i = i.wrapping_add(1);
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+    Ok(())
+}
+
 // Temporary utility for early testing: direct download to file (non-resumable)
 #[tauri::command]
 pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
-    let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     let resp = client
         .s3
@@ -159,7 +199,7 @@ pub async fn list_objects(
     token: Option<String>,
     max_keys: Option<i32>,
 ) -> SpResult<crate::types::ListPage> {
-    let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     let p = prefix.unwrap_or_else(|| "".into());
     r2_client::list_objects(&client, &p, token, max_keys.unwrap_or(1000)).await
@@ -176,7 +216,7 @@ pub async fn delete_object(key: String) -> SpResult<()> {
             at: chrono::Utc::now().timestamp_millis(),
         });
     }
-    let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     r2_client::delete_object(&client, &key).await
 }

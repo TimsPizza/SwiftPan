@@ -2,10 +2,12 @@
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
-            crate::bridge::vault_status,
-            crate::bridge::vault_set_manual,
-            crate::bridge::vault_unlock,
-            crate::bridge::vault_lock,
+            crate::bridge::backend_status,
+            crate::bridge::backend_set_credentials,
+            crate::bridge::vault_status,     // legacy shim
+            crate::bridge::vault_set_manual, // legacy shim
+            crate::bridge::vault_unlock,     // legacy shim
+            crate::bridge::vault_lock,       // legacy shim
             crate::bridge::r2_sanity_check,
             crate::bridge::upload_new,
             crate::bridge::upload_ctrl,
@@ -18,6 +20,7 @@ pub fn run() {
             crate::bridge::usage_list_month,
             crate::bridge::bg_set_limits,
             crate::bridge::bg_global,
+            crate::bridge::bg_mock_start,
             crate::bridge::download_now,
             crate::bridge::list_objects,
             crate::bridge::delete_object,
@@ -33,14 +36,16 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| {
+            eprintln!("error while running tauri application: {}", e);
+        });
 }
 pub mod background;
 pub mod bridge;
-pub mod credential_vault;
 pub mod download;
 pub mod r2_client;
 pub mod share;
+pub mod sp_backend;
 pub mod types;
 pub mod upload;
 pub mod usage;
