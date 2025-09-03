@@ -1,11 +1,11 @@
 use crate::types::*;
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+use base64::Engine;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::XChaCha20Poly1305;
 use directories::ProjectDirs;
 use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, RngCore};
-use base64::Engine;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -61,7 +61,13 @@ impl CredentialVault {
         // KDF params
         let mut s = [0u8; 16];
         OsRng.fill_bytes(&mut s);
-        let kdf = KdfParams { algo: "argon2id".into(), mem_kib: 65536, iterations: 3, parallelism: 2, salt: s };
+        let kdf = KdfParams {
+            algo: "argon2id".into(),
+            mem_kib: 65536,
+            iterations: 3,
+            parallelism: 2,
+            salt: s,
+        };
         let (key, kdf_params) = derive_key(master_password, Some(&kdf))?;
 
         // Encrypt
