@@ -112,6 +112,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-s3",
  "base64 0.22.1",
  "bytes",

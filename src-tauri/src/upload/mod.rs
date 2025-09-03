@@ -64,11 +64,12 @@ pub async fn start_upload(params: NewUploadParams) -> SpResult<String> {
     let mut g = UL.lock().unwrap();
     g.insert(id.clone(), UTransfer { key: params.key.clone(), src: PathBuf::from(&params.source_path), part_size: params.part_size.max(8 * 1024 * 1024), bytes_total: total, bytes_done: 0, parts_completed: 0, last_error: None, paused: paused.clone(), cancelled: cancelled.clone() });
   }
+  let id_spawn = id.clone();
   tokio::spawn(async move {
-    let res = run_upload(&id, params, paused.clone(), cancelled.clone()).await;
+    let res = run_upload(&id_spawn, params, paused.clone(), cancelled.clone()).await;
     if let Err(e) = res {
       let mut g = UL.lock().unwrap();
-      if let Some(t) = g.get_mut(&id) { t.last_error = Some(e); }
+      if let Some(t) = g.get_mut(&id_spawn) { t.last_error = Some(e); }
     }
   });
   Ok(id)

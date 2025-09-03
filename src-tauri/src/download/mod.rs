@@ -70,11 +70,12 @@ pub async fn start_download(params: NewDownloadParams) -> SpResult<String> {
     g.insert(id.clone(), Transfer { key: key.clone(), dest: dest.clone(), chunk, expected_etag: expected.clone(), observed_etag: None, bytes_total: None, bytes_done: 0, last_error: None, paused: paused.clone(), cancelled: cancelled.clone() });
   }
 
+  let id_spawn = id.clone();
   tokio::spawn(async move {
-    let res = run_download(&id, &key, &dest, chunk, expected, paused.clone(), cancelled.clone()).await;
+    let res = run_download(&id_spawn, &key, &dest, chunk, expected, paused.clone(), cancelled.clone()).await;
     if let Err(e) = res {
       let mut g = DL.lock().unwrap();
-      if let Some(t) = g.get_mut(&id) { t.last_error = Some(e); }
+      if let Some(t) = g.get_mut(&id_spawn) { t.last_error = Some(e); }
     }
   });
 

@@ -1,10 +1,11 @@
 use crate::types::*;
-use argon2::{password_hash::SaltString, Argon2, PasswordHasher, PasswordVerifier};
+use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::XChaCha20Poly1305;
 use directories::ProjectDirs;
 use once_cell::sync::Lazy;
-use rand::rngs::OsRng;
+use rand::{rngs::OsRng, RngCore};
+use base64::Engine;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -58,31 +59,15 @@ impl CredentialVault {
         })?;
 
         // KDF params
-        let salt = SaltString::generate(&mut OsRng);
-        let kdf = KdfParams {
-            algo: "argon2id".into(),
-            mem_kib: 65536,
-            iterations: 3,
-            parallelism: 2,
-            salt: base64::engine::general_purpose::STANDARD_NO_PAD
-                .decode(salt.as_str())
-                .unwrap_or_default()
-                .as_slice()
-                .try_into()
-                .unwrap_or([0u8; 16]),
-        };
+        let mut s = [0u8; 16];
+        OsRng.fill_bytes(&mut s);
+        let kdf = KdfParams { algo: "argon2id".into(), mem_kib: 65536, iterations: 3, parallelism: 2, salt: s };
         let (key, kdf_params) = derive_key(master_password, Some(&kdf))?;
 
         // Encrypt
         let cipher = XChaCha20Poly1305::new((&key).into());
         let mut nonce = [0u8; 24];
-        getrandom::getrandom(&mut nonce).map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("nonce rng failed: {e}"),
-            retry_after_ms: Some(200),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
+        OsRng.fill_bytes(&mut nonce);
         let ciphertext = cipher
             .encrypt((&nonce).into(), plaintext.as_slice())
             .map_err(|e| SpError {
@@ -253,13 +238,7 @@ fn derive_key(
             parallelism: 2,
             salt: {
                 let mut s = [0u8; 16];
-                getrandom::getrandom(&mut s).map_err(|e| SpError {
-                    kind: ErrorKind::RetryableNet,
-                    message: format!("salt rng failed: {e}"),
-                    retry_after_ms: Some(100),
-                    context: None,
-                    at: chrono::Utc::now().timestamp_millis(),
-                })?;
+                OsRng.fill_bytes(&mut s);
                 s
             },
         }

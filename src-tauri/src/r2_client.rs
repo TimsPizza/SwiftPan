@@ -1,7 +1,7 @@
 use crate::types::*;
 use aws_config::Region;
 use aws_sdk_s3 as s3;
-use aws_sdk_s3::types::Object;
+use aws_sdk_s3::config::Credentials;
 
 pub struct R2Client {
   pub s3: s3::Client,
@@ -10,23 +10,21 @@ pub struct R2Client {
 
 pub async fn build_client(cfg: &R2Config) -> SpResult<R2Client> {
   let region = cfg.region.clone().unwrap_or_else(|| "auto".to_string());
-  let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest()).region(Region::new(region));
-  // Endpoint override for R2
-  let endpoint_url = cfg.endpoint.clone();
-  let endpoint = aws_sdk_s3::config::Region::new("auto");
-  let config = aws_sdk_s3::config::Builder::from(&aws_sdk_s3::config::Builder::new().region(endpoint))
-    .endpoint_url(endpoint_url)
-    .credentials_provider(aws_credential_types::Credentials::new(
+  let base = aws_config::defaults(aws_config::BehaviorVersion::latest())
+    .region(Region::new(region))
+    .load()
+    .await;
+  let conf = s3::config::Builder::from(&base)
+    .endpoint_url(cfg.endpoint.clone())
+    .credentials_provider(Credentials::new(
       cfg.access_key_id.clone(),
       cfg.secret_access_key.clone(),
       None,
       None,
       "swiftpan",
     ))
-    .behavior_version_latest()
     .build();
-
-  let s3 = s3::Client::from_conf(config);
+  let s3 = s3::Client::from_conf(conf);
   Ok(R2Client { s3, bucket: cfg.bucket.clone() })
 }
 
@@ -104,7 +102,6 @@ pub async fn presign_get_url(
   ttl_secs: u64,
   download_filename: Option<String>,
 ) -> SpResult<(String, i64)> {
-  use aws_sdk_s3::types::SdkError;
   let mut get = client.s3.get_object().bucket(&client.bucket).key(key);
   if let Some(name) = download_filename {
     get = get.response_content_disposition(format!("attachment; filename=\"{}\"", name));
@@ -155,27 +152,20 @@ pub async fn list_objects(
     .map_err(|e| SpError { kind: ErrorKind::RetryableNet, message: format!("ListObjectsV2: {e}"), retry_after_ms: Some(500), context: None, at: chrono::Utc::now().timestamp_millis() })?;
 
   let mut items: Vec<FileEntry> = vec![];
-  if let Some(objs) = out.contents() {
-    for o in objs {
+  for o in out.contents() {
       let key = o.key().unwrap_or_default().to_string();
       items.push(FileEntry {
         key: key.clone(),
         size: o.size().map(|v| v as u64),
-        last_modified_ms: o
-          .last_modified()
-          .and_then(|dt| dt.to_chrono_utc().ok())
-          .map(|t| t.timestamp_millis()),
+        last_modified_ms: None,
         etag: o.e_tag().map(|s| s.trim_matches('"').to_string()),
         is_prefix: false,
         protected: key.starts_with(ANALYTICS_PREFIX),
       });
-    }
   }
-  if let Some(prefixes) = out.common_prefixes() {
-    for p in prefixes {
+  for p in out.common_prefixes() {
       let k = p.prefix().unwrap_or_default().to_string();
       items.push(FileEntry { key: k.clone(), size: None, last_modified_ms: None, etag: None, is_prefix: true, protected: k.starts_with(ANALYTICS_PREFIX) });
-    }
   }
   // Stable order: prefixes first then objects by name
   items.sort_by(|a, b| match (a.is_prefix, b.is_prefix) {
