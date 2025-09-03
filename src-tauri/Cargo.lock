@@ -120,6 +120,7 @@ dependencies = [
  "directories",
  "futures",
  "log",
+ "once_cell",
  "rand 0.8.5",
  "serde",
  "serde_json",
