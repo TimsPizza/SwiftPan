@@ -1,4 +1,3 @@
-import TauriBrowser from "@/components/TauriBrowser";
 import { Navigate, RouteObject } from "react-router-dom";
 import { AppShell, AuthShell, RootLayout } from "./_layout";
 import FilesPage from "./pages/FilesPage";
@@ -21,7 +20,6 @@ export const routes: RouteObject[] = [
           { path: "files", element: <FilesPage /> },
           { path: "usage", element: <UsagePage /> },
           { path: "settings", element: <SettingsPage /> },
-          { path: "tauri-browser", element: <TauriBrowser /> },
         ],
       },
       {

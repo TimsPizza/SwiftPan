@@ -1,5 +1,3 @@
-"use client";
-
 import { ErrorDisplay } from "@/components/fallback/ErrorDisplay";
 import { LoadingSpinner } from "@/components/fallback/LoadingSpinner";
 import { FileList } from "@/components/features/FileList";

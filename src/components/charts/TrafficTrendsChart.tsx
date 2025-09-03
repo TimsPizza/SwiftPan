@@ -1,5 +1,3 @@
-"use client";
-
 import type { TrendPoint } from "@/hooks/use-trends";
 import { useMemo } from "react";
 import {

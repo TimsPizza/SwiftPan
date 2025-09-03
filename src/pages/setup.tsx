@@ -1,5 +1,3 @@
-"use client";
-
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/Button";
 import {
@@ -14,7 +12,6 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { useSetup } from "@/hooks/use-setup";
 import { AppError } from "@/lib/api/errors";
-import { settingsService } from "@/lib/settings/service";
 import {
   AlertCircle,
   ArrowRight,
@@ -24,9 +21,9 @@ import {
   Rocket,
   Server,
 } from "lucide-react";
+import { useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { useNavigate } from "react-router-dom";
-import { useState } from "react";
 import { toast } from "sonner";
 
 const SETUP_STEPS = [

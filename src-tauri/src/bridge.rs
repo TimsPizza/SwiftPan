@@ -180,7 +180,7 @@ pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
-    tokio::io::copy(&mut body, &mut file)
+    let copied = tokio::io::copy(&mut body, &mut file)
         .await
         .map_err(|e| SpError {
             kind: ErrorKind::RetryableNet,
@@ -190,6 +190,17 @@ pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
             at: chrono::Utc::now().timestamp_millis(),
         })?;
     file.flush().await.ok();
+    // Usage: B 类 GetObject +1；egress 计总拷贝字节
+    let mut b = std::collections::HashMap::new();
+    b.insert("GetObject".into(), 1u64);
+    let _ = crate::usage::UsageSync::record_local_delta(crate::types::UsageDelta {
+        class_a: Default::default(),
+        class_b: b,
+        ingress_bytes: 0,
+        egress_bytes: copied as u64,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: 0,
+    });
     Ok(())
 }
 
@@ -203,6 +214,13 @@ pub async fn list_objects(
     let client = r2_client::build_client(&bundle.r2).await?;
     let p = prefix.unwrap_or_else(|| "".into());
     r2_client::list_objects(&client, &p, token, max_keys.unwrap_or(1000)).await
+}
+
+#[tauri::command]
+pub async fn list_all_objects(max_total: Option<i32>) -> SpResult<Vec<crate::types::FileEntry>> {
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
+    let client = r2_client::build_client(&bundle.r2).await?;
+    r2_client::list_all_objects_flat(&client, max_total.unwrap_or(10_000)).await
 }
 
 #[tauri::command]

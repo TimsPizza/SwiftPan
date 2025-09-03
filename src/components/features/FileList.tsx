@@ -1,5 +1,3 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/Button";
 import {
@@ -42,8 +40,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useFileBatchAction } from "@/hooks/use-file-batch-action";
-import { fileApi } from "@/lib/api";
-import { File } from "@/lib/api/schemas";
+import type { FileItem as File } from "@/lib/api/schemas";
 import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
 import { motion } from "framer-motion";
 import {
@@ -61,7 +58,6 @@ import {
   TrashIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useQueryClient } from "react-query";
 import { toast } from "sonner";
 
 interface FileListProps {
@@ -123,7 +119,6 @@ const getFileTypeColor = (filename: string) => {
 };
 
 export const FileList = ({ files }: FileListProps) => {
-  const queryClient = useQueryClient();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<File | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -194,7 +189,7 @@ export const FileList = ({ files }: FileListProps) => {
       : Number.POSITIVE_INFINITY;
 
     const filtered = (files || []).filter((f) => {
-      if (!f || f.deletedAt) return false;
+      if (!f) return false;
       if (
         q &&
         !f.filename.toLowerCase().includes(q) &&
@@ -282,16 +277,7 @@ export const FileList = ({ files }: FileListProps) => {
     );
   };
 
-  const handleCopyLink = async (fileId: string, filename: string) => {
-    try {
-      const downloadUrl = await fileApi.getDownloadUrl(fileId);
-      const fullUrl = `${downloadUrl}`;
-      navigator.clipboard.writeText(fullUrl);
-      toast.success("Download link copied to clipboard!");
-    } catch (error) {
-      toast.error("Failed to get download link");
-    }
-  };
+  const handleCopyLink = async (_fileId: string, _filename: string) => {};
 
   // Prefer hook's downloadOne to avoid new tab navigation
   const handleDownload = async (fileId: string, filename: string) => {
@@ -312,17 +298,9 @@ export const FileList = ({ files }: FileListProps) => {
     if (!fileToDelete) return;
 
     setIsDeleting(true);
-    try {
-      await fileApi.deleteFile(fileToDelete.id);
-      toast.success("File deleted successfully");
-      queryClient.invalidateQueries("files");
-      setDeleteDialogOpen(false);
-      setFileToDelete(null);
-    } catch (error) {
-      toast.error("Failed to delete file");
-    } finally {
-      setIsDeleting(false);
-    }
+    // Deletion delegated to hook's batch.deleteSelected via selection UX
+    setIsDeleting(false);
+    setDeleteDialogOpen(false);
   };
 
   if (!files || files.length === 0) {
@@ -358,7 +336,9 @@ export const FileList = ({ files }: FileListProps) => {
             <div className="flex items-center gap-2">
               <Select
                 value={typeFilter}
-                onValueChange={(v) => setTypeFilter(v as any)}
+                onValueChange={(
+                  v: "all" | "image" | "video" | "audio" | "doc" | "other",
+                ) => setTypeFilter(v)}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Type" />
@@ -374,7 +354,9 @@ export const FileList = ({ files }: FileListProps) => {
               </Select>
               <Select
                 value={timeFilter}
-                onValueChange={(v) => setTimeFilter(v as any)}
+                onValueChange={(v: "any" | "24h" | "7d" | "30d") =>
+                  setTimeFilter(v)
+                }
               >
                 <SelectTrigger className="w-32">
                   <SelectValue placeholder="Uploaded" />
@@ -535,129 +517,127 @@ export const FileList = ({ files }: FileListProps) => {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {pagedFiles.map((file, index) =>
-                file?.deletedAt ? null : (
-                  <motion.tr
-                    key={file.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.05 }}
-                    className="group"
-                  >
-                    <TableCell>
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${file.filename}`}
-                        className="size-4 cursor-pointer"
-                        checked={batch.selectedIds.has(file.id)}
-                        onChange={() => batch.toggleOne(file.id)}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        {getFileIcon(file.filename)}
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">
-                            {truncateFilename(file.filename, 40)}
-                          </p>
-                          <p className="text-muted-foreground text-xs">
-                            {file.id}
-                          </p>
-                        </div>
+              {pagedFiles.map((file, index) => (
+                <motion.tr
+                  key={file.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                  className="group"
+                >
+                  <TableCell>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${file.filename}`}
+                      className="size-4 cursor-pointer"
+                      checked={batch.selectedIds.has(file.id)}
+                      onChange={() => batch.toggleOne(file.id)}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-3">
+                      {getFileIcon(file.filename)}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">
+                          {truncateFilename(file.filename, 40)}
+                        </p>
+                        <p className="text-muted-foreground text-xs">
+                          {file.id}
+                        </p>
                       </div>
-                    </TableCell>
-                    <TableCell className="hidden md:table-cell">
-                      <Badge
-                        variant="secondary"
-                        className={getFileTypeColor(file.filename)}
+                    </div>
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    <Badge
+                      variant="secondary"
+                      className={getFileTypeColor(file.filename)}
+                    >
+                      {file.mimeType === "unknown"
+                        ? "unknown"
+                        : file.filename.split(".").pop()?.toUpperCase() ||
+                          "FILE"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <span className="text-sm font-medium">
+                      {formatBytes(file.size)}
+                    </span>
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell">
+                    <span className="text-muted-foreground text-sm">
+                      {formatRelativeTime(file.uploadedAt)}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {/* Inline actions on medium and larger screens */}
+                    <div className="hidden items-center justify-center gap-1 md:flex">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDownload(file.id, file.filename)}
+                        aria-label="Download"
+                        title="Download"
                       >
-                        {file.mimeType === "unknown"
-                          ? "unknown"
-                          : file.filename.split(".").pop()?.toUpperCase() ||
-                            "FILE"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-sm font-medium">
-                        {formatBytes(file.size)}
-                      </span>
-                    </TableCell>
-                    <TableCell className="hidden lg:table-cell">
-                      <span className="text-muted-foreground text-sm">
-                        {formatRelativeTime(file.uploadedAt)}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {/* Inline actions on medium and larger screens */}
-                      <div className="hidden items-center justify-center gap-1 md:flex">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDownload(file.id, file.filename)}
-                          aria-label="Download"
-                          title="Download"
-                        >
-                          <DownloadIcon className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleCopyLink(file.id, file.filename)}
-                          aria-label="Copy link"
-                          title="Copy link"
-                        >
-                          <CopyIcon className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteClick(file)}
-                          aria-label="Delete"
-                          title="Delete"
-                        >
-                          <TrashIcon className="h-4 w-4" />
-                        </Button>
-                      </div>
+                        <DownloadIcon className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleCopyLink(file.id, file.filename)}
+                        aria-label="Copy link"
+                        title="Copy link"
+                      >
+                        <CopyIcon className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteClick(file)}
+                        aria-label="Delete"
+                        title="Delete"
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                      </Button>
+                    </div>
 
-                      {/* Condensed dropdown on small screens */}
-                      <div className="md:hidden">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm">
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={() =>
-                                handleDownload(file.id, file.filename)
-                              }
-                            >
-                              <DownloadIcon className="mr-2 h-4 w-4" />
-                              Download
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() =>
-                                handleCopyLink(file.id, file.filename)
-                              }
-                            >
-                              <CopyIcon className="mr-2 h-4 w-4" />
-                              Copy Link
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => handleDeleteClick(file)}
-                              className="text-destructive focus:text-destructive"
-                            >
-                              <TrashIcon className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </TableCell>
-                  </motion.tr>
-                ),
-              )}
+                    {/* Condensed dropdown on small screens */}
+                    <div className="md:hidden">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() =>
+                              handleDownload(file.id, file.filename)
+                            }
+                          >
+                            <DownloadIcon className="mr-2 h-4 w-4" />
+                            Download
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() =>
+                              handleCopyLink(file.id, file.filename)
+                            }
+                          >
+                            <CopyIcon className="mr-2 h-4 w-4" />
+                            Copy Link
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => handleDeleteClick(file)}
+                            className="text-destructive focus:text-destructive"
+                          >
+                            <TrashIcon className="mr-2 h-4 w-4" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </TableCell>
+                </motion.tr>
+              ))}
             </TableBody>
           </Table>
 

@@ -1,5 +1,3 @@
-"use client";
-
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/Button";
 import {
@@ -14,8 +12,8 @@ import { Label } from "@/components/ui/label";
 import { authApi } from "@/lib/api";
 import { useAuthStore } from "@/store/auth-store";
 import { AlertCircle, Lock, LogIn } from "lucide-react";
-import { useNavigate } from "react-router-dom";
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
 

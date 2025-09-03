@@ -1,5 +1,3 @@
-"use client";
-
 import { TrafficTrendsChart } from "@/components/charts/TrafficTrendsChart";
 import { UsageTrendsChart } from "@/components/charts/UsageTrendsChart";
 import { ErrorDisplay } from "@/components/fallback/ErrorDisplay";
@@ -31,8 +29,8 @@ import { useUsageSummary } from "@/hooks/use-usage-summary";
 import { formatRelativeTime } from "@/lib/utils";
 import { CheckCircledIcon } from "@radix-ui/react-icons";
 import { BarChart3, RefreshCw } from "lucide-react";
-import { Helmet } from "react-helmet-async";
 import { useEffect, useMemo, useState } from "react";
+import { Helmet } from "react-helmet-async";
 
 export default function UsagePage() {
   const [selectedPeriod, setSelectedPeriod] = useState("7d");

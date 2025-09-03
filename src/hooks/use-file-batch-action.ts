@@ -1,7 +1,6 @@
-import { fileApi } from "@/lib/api";
-import type { File } from "@/lib/api/schemas";
+import type { FileItem as File } from "@/lib/api/schemas";
+import { nv } from "@/lib/api/tauriBridge";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQueryClient } from "react-query";
 import { toast } from "sonner";
 
 export interface UseFileBatchActionReturn {
@@ -21,7 +20,6 @@ export const useFileBatchAction = (
   files: File[] | undefined,
   visibleFiles: File[] | undefined,
 ): UseFileBatchActionReturn => {
-  const queryClient = useQueryClient();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // map for quick id -> file lookup
@@ -33,7 +31,7 @@ export const useFileBatchAction = (
 
   // compute visible ids (filtered + not deleted)
   const visibleIds = useMemo(
-    () => (visibleFiles || []).filter((f) => !f.deletedAt).map((f) => f.id),
+    () => (visibleFiles || []).map((f) => f.id),
     [visibleFiles],
   );
 
@@ -91,7 +89,17 @@ export const useFileBatchAction = (
 
     for (const f of targets) {
       try {
-        const url = await fileApi.getDownloadUrl(f.id);
+        const pres = await nv.share_generate({ key: f.id, ttl_secs: 3600 });
+        let url: string | null = null;
+        pres.match(
+          (ok) => (url = ok.url),
+          (e) => {
+            toast.error(
+              `Failed to presign ${f.filename}: ${String((e as any)?.message || e)}`,
+            );
+          },
+        );
+        if (!url) continue;
         // Fetch the file data to avoid cross-origin navigation
         const resp = await fetch(url, { mode: "cors" });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -115,7 +123,17 @@ export const useFileBatchAction = (
 
   const downloadOne = useCallback(async (file: File) => {
     try {
-      const url = await fileApi.getDownloadUrl(file.id);
+      const pres = await nv.share_generate({ key: file.id, ttl_secs: 3600 });
+      let url: string | null = null;
+      pres.match(
+        (ok) => (url = ok.url),
+        (e) => {
+          toast.error(
+            `Failed to presign ${file.filename}: ${String((e as any)?.message || e)}`,
+          );
+        },
+      );
+      if (!url) return;
       const resp = await fetch(url, { mode: "cors" });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const blob = await resp.blob();
@@ -138,8 +156,11 @@ export const useFileBatchAction = (
     let failed = 0;
     for (const id of Array.from(selectedIds)) {
       try {
-        await fileApi.deleteFile(id);
-        success++;
+        const r = await nv.delete_object(id);
+        r.match(
+          () => success++,
+          () => failed++,
+        );
       } catch (e) {
         failed++;
       }
@@ -147,9 +168,8 @@ export const useFileBatchAction = (
     if (success > 0) toast.success(`Deleted ${success} file(s)`);
     if (failed > 0) toast.error(`Failed to delete ${failed} file(s)`);
     clearSelection();
-    queryClient.invalidateQueries("files");
     return { success, failed };
-  }, [selectedIds, clearSelection, queryClient]);
+  }, [selectedIds, clearSelection]);
 
   const getSelectedFiles = useCallback((): File[] => {
     return Array.from(selectedIds)

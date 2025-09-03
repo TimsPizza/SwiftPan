@@ -85,6 +85,17 @@ export const nv = {
       token,
       maxKeys: max,
     }),
+  list_all_objects: (max_total = 10000) =>
+    resultInvoke<
+      {
+        key: string;
+        size?: number;
+        last_modified_ms?: number;
+        etag?: string;
+        is_prefix: boolean;
+        protected: boolean;
+      }[]
+    >("list_all_objects", { maxTotal: max_total }),
   delete_object: (key: string) => resultInvoke<void>("delete_object", { key }),
   share_generate: (params: {
     key: string;

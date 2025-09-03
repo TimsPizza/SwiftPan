@@ -1,4 +1,5 @@
 use crate::types::*;
+use crate::usage::UsageSync;
 use aws_config::Region;
 use aws_sdk_s3 as s3;
 use aws_sdk_s3::config::Credentials;
@@ -48,6 +49,17 @@ pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> 
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    // Usage: B 类 ListObjectsV2 +1
+    let mut b = std::collections::HashMap::new();
+    b.insert("ListObjectsV2".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: Default::default(),
+        class_b: b,
+        ingress_bytes: 0,
+        egress_bytes: 0,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: 0,
+    });
 
     // Put -> Head -> Delete on a temp key
     let temp_key = format!(
@@ -70,6 +82,17 @@ pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> 
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    // Usage: A 类 PutObject +1，入口字节很小（2B），计一次 ingress_bytes
+    let mut a = std::collections::HashMap::new();
+    a.insert("PutObject".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: a,
+        class_b: Default::default(),
+        ingress_bytes: 2,
+        egress_bytes: 0,
+        added_storage_bytes: 2,
+        deleted_storage_bytes: 0,
+    });
 
     let _ = client
         .s3
@@ -85,6 +108,17 @@ pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> 
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    // Usage: B 类 HeadObject +1
+    let mut b = std::collections::HashMap::new();
+    b.insert("HeadObject".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: Default::default(),
+        class_b: b,
+        ingress_bytes: 0,
+        egress_bytes: 0,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: 0,
+    });
 
     let _ = client
         .s3
@@ -100,6 +134,17 @@ pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> 
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    // Usage: A 类 DeleteObject +1；删除 2B
+    let mut a = std::collections::HashMap::new();
+    a.insert("DeleteObject".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: a,
+        class_b: Default::default(),
+        ingress_bytes: 0,
+        egress_bytes: 0,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: 2,
+    });
     Ok(())
 }
 
@@ -158,6 +203,17 @@ pub async fn list_objects(
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     })?;
+    // Usage: B 类 ListObjectsV2 +1
+    let mut b = std::collections::HashMap::new();
+    b.insert("ListObjectsV2".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: Default::default(),
+        class_b: b,
+        ingress_bytes: 0,
+        egress_bytes: 0,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: 0,
+    });
 
     let mut items: Vec<FileEntry> = vec![];
     for o in out.contents() {
@@ -195,7 +251,68 @@ pub async fn list_objects(
     })
 }
 
+pub async fn list_all_objects_flat(
+    client: &R2Client,
+    max_total: i32,
+) -> SpResult<Vec<crate::types::FileEntry>> {
+    use crate::types::{FileEntry, ANALYTICS_PREFIX};
+    let mut items: Vec<FileEntry> = vec![];
+    let mut token: Option<String> = None;
+    loop {
+        let mut req = client
+            .s3
+            .list_objects_v2()
+            .bucket(&client.bucket)
+            .max_keys(1000);
+        if let Some(tok) = token.clone() {
+            req = req.continuation_token(tok);
+        }
+        let out = req.send().await.map_err(|e| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("ListObjectsV2: {e}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        for o in out.contents() {
+            let key = o.key().unwrap_or_default().to_string();
+            items.push(FileEntry {
+                key: key.clone(),
+                size: o.size().map(|v| v as u64),
+                last_modified_ms: o
+                    .last_modified()
+                    .and_then(|dt| dt.secs().checked_mul(1000))
+                    .map(|ms| ms as i64),
+                etag: o.e_tag().map(|s| s.trim_matches('"').to_string()),
+                is_prefix: false,
+                protected: key.starts_with(ANALYTICS_PREFIX),
+            });
+        }
+        if items.len() as i32 >= max_total {
+            break;
+        }
+        token = out.next_continuation_token().map(|s| s.to_string());
+        if token.is_none() {
+            break;
+        }
+    }
+    // Stable sort by key
+    items.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(items)
+}
+
 pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<()> {
+    // Best-effort HEAD to capture size
+    let size_opt = client
+        .s3
+        .head_object()
+        .bucket(&client.bucket)
+        .key(key)
+        .send()
+        .await
+        .ok()
+        .and_then(|h| h.content_length())
+        .map(|v| v as u64);
     client
         .s3
         .delete_object()
@@ -210,6 +327,17 @@ pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<()> {
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    // Usage: A 类 DeleteObject +1；无法获知对象大小，这里先只计操作，删除字节数需由上层传入或预先 HEAD
+    let mut a = std::collections::HashMap::new();
+    a.insert("DeleteObject".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: a,
+        class_b: Default::default(),
+        ingress_bytes: 0,
+        egress_bytes: 0,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: size_opt.unwrap_or(0),
+    });
     Ok(())
 }
 
@@ -228,6 +356,9 @@ pub async fn get_object_bytes(client: &R2Client, key: &str) -> SpResult<(Vec<u8>
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    // Usage: B 类 GetObject +1；egress 按返回大小
+    let mut b = std::collections::HashMap::new();
+    b.insert("GetObject".into(), 1u64);
     let etag = resp.e_tag().map(|s| s.trim_matches('"').to_string());
     let data = resp
         .body
@@ -241,6 +372,14 @@ pub async fn get_object_bytes(client: &R2Client, key: &str) -> SpResult<(Vec<u8>
             at: chrono::Utc::now().timestamp_millis(),
         })?
         .to_vec();
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: Default::default(),
+        class_b: b,
+        ingress_bytes: 0,
+        egress_bytes: data.len() as u64,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: 0,
+    });
     Ok((data, etag))
 }
 
@@ -251,6 +390,7 @@ pub async fn put_object_bytes(
     if_match: Option<String>,
     if_none_match: bool,
 ) -> SpResult<()> {
+    let write_len = bytes.len() as u64;
     let mut req = client
         .s3
         .put_object()
@@ -270,5 +410,16 @@ pub async fn put_object_bytes(
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     })?;
+    // Usage: A 类 PutObject +1；ingress 按写入大小
+    let mut a = std::collections::HashMap::new();
+    a.insert("PutObject".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: a,
+        class_b: Default::default(),
+        ingress_bytes: write_len,
+        egress_bytes: 0,
+        added_storage_bytes: write_len,
+        deleted_storage_bytes: 0,
+    });
     Ok(())
 }

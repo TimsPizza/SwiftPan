@@ -62,6 +62,8 @@ pub struct UsageDelta {
     pub class_b: std::collections::HashMap<String, u64>,
     pub ingress_bytes: u64,
     pub egress_bytes: u64,
+    pub added_storage_bytes: u64,
+    pub deleted_storage_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +74,8 @@ pub struct DailyLedger {
     pub ingress_bytes: u64,
     pub egress_bytes: u64,
     pub storage_bytes: u64,
+    pub peak_storage_bytes: u64,
+    pub deleted_storage_bytes: u64,
     pub rev: u64,
     pub updated_at: String, // ISO UTC
 }

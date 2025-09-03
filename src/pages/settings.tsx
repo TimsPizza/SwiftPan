@@ -1,5 +1,3 @@
-"use client";
-
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/Button";
@@ -25,8 +23,8 @@ import {
   Settings as SettingsIcon,
   Shield,
 } from "lucide-react";
-import { Helmet } from "react-helmet-async";
 import { useEffect, useState } from "react";
+import { Helmet } from "react-helmet-async";
 import { toast } from "sonner";
 
 export default function SettingsPage() {

@@ -1,4 +1,5 @@
 use crate::types::*;
+use crate::usage::UsageSync;
 use crate::{r2_client, sp_backend::SpBackend};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -214,6 +215,17 @@ async fn run_upload(
                 etag: String::from(""),
             },
         );
+        // Usage: A 类 PutObject +1；按写入大小计 ingress
+        let mut a = std::collections::HashMap::new();
+        a.insert("PutObject".into(), 1u64);
+        let _ = UsageSync::record_local_delta(UsageDelta {
+            class_a: a,
+            class_b: Default::default(),
+            ingress_bytes: size,
+            egress_bytes: 0,
+            added_storage_bytes: size,
+            deleted_storage_bytes: 0,
+        });
         emit_upload(
             app,
             &UploadEvent::Completed {
@@ -316,6 +328,17 @@ async fn run_upload(
                 etag: etag.clone(),
             },
         );
+        // Usage: B 类 UploadPart +1；按分片大小计 ingress
+        let mut b = std::collections::HashMap::new();
+        b.insert("UploadPart".into(), 1u64);
+        let _ = UsageSync::record_local_delta(UsageDelta {
+            class_a: Default::default(),
+            class_b: b,
+            ingress_bytes: n as u64,
+            egress_bytes: 0,
+            added_storage_bytes: n as u64,
+            deleted_storage_bytes: 0,
+        });
         part_number += 1;
     }
 
@@ -370,6 +393,17 @@ async fn run_upload(
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    // Usage: A 类 CompleteMultipartUpload +1
+    let mut a = std::collections::HashMap::new();
+    a.insert("CompleteMultipartUpload".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: a,
+        class_b: Default::default(),
+        ingress_bytes: 0,
+        egress_bytes: 0,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: 0,
+    });
     emit_upload(
         app,
         &UploadEvent::Completed {

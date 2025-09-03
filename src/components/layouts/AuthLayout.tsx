@@ -1,5 +1,3 @@
-"use client";
-
 import { ReactNode } from "react";
 
 export const AuthLayout = ({ children }: { children: ReactNode }) => {

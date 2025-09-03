@@ -15,6 +15,8 @@ impl UsageSync {
                 class_b: Default::default(),
                 ingress_bytes: 0,
                 egress_bytes: 0,
+                added_storage_bytes: 0,
+                deleted_storage_bytes: 0,
             })
         } else {
             UsageDelta {
@@ -22,6 +24,8 @@ impl UsageSync {
                 class_b: Default::default(),
                 ingress_bytes: 0,
                 egress_bytes: 0,
+                added_storage_bytes: 0,
+                deleted_storage_bytes: 0,
             }
         };
         for (k, v) in delta.class_a {
@@ -32,6 +36,8 @@ impl UsageSync {
         }
         cur.ingress_bytes += delta.ingress_bytes;
         cur.egress_bytes += delta.egress_bytes;
+        cur.added_storage_bytes += delta.added_storage_bytes;
+        cur.deleted_storage_bytes += delta.deleted_storage_bytes;
         // Ensure parent dir exists
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent).map_err(ioe)?;
@@ -63,6 +69,8 @@ impl UsageSync {
                 class_b: Default::default(),
                 ingress_bytes: 0,
                 egress_bytes: 0,
+                added_storage_bytes: 0,
+                deleted_storage_bytes: 0,
             })
         } else {
             UsageDelta {
@@ -70,6 +78,8 @@ impl UsageSync {
                 class_b: Default::default(),
                 ingress_bytes: 0,
                 egress_bytes: 0,
+                added_storage_bytes: 0,
+                deleted_storage_bytes: 0,
             }
         };
 
@@ -88,6 +98,8 @@ impl UsageSync {
                 ingress_bytes: 0,
                 egress_bytes: 0,
                 storage_bytes: 0,
+                peak_storage_bytes: 0,
+                deleted_storage_bytes: 0,
                 rev: 1,
                 updated_at: chrono::Utc::now().to_rfc3339(),
             })
@@ -112,6 +124,8 @@ impl UsageSync {
             ingress_bytes: 0,
             egress_bytes: 0,
             storage_bytes: 0,
+            peak_storage_bytes: 0,
+            deleted_storage_bytes: 0,
             rev: 1,
             updated_at: chrono::Utc::now().to_rfc3339(),
         });
@@ -123,6 +137,21 @@ impl UsageSync {
         }
         day.ingress_bytes += local.ingress_bytes;
         day.egress_bytes += local.egress_bytes;
+        // 存储计费：根据本地增量估算存量并更新峰值
+        // storage_bytes(t) ≈ storage_bytes(t-1) + added - deleted
+        // peak_storage_bytes(t) = max(peak_storage_bytes(t), storage_bytes(t))
+        // 注意：初始 storage_bytes 需要已有账本提供基线
+        let added = local.added_storage_bytes;
+        let deleted = local.deleted_storage_bytes;
+        let new_storage = day
+            .storage_bytes
+            .saturating_add(added)
+            .saturating_sub(deleted);
+        day.storage_bytes = new_storage;
+        if new_storage > day.peak_storage_bytes {
+            day.peak_storage_bytes = new_storage;
+        }
+        day.deleted_storage_bytes = day.deleted_storage_bytes.saturating_add(deleted);
         day.updated_at = chrono::Utc::now().to_rfc3339();
         day.rev += 1;
 

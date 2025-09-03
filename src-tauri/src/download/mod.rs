@@ -1,4 +1,5 @@
 use crate::types::*;
+use crate::usage::UsageSync;
 use crate::{r2_client, sp_backend::SpBackend};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -177,6 +178,17 @@ async fn run_download(
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+    // Usage: B 类 HeadObject +1
+    let mut b = std::collections::HashMap::new();
+    b.insert("HeadObject".into(), 1u64);
+    let _ = UsageSync::record_local_delta(UsageDelta {
+        class_a: Default::default(),
+        class_b: b,
+        ingress_bytes: 0,
+        egress_bytes: 0,
+        added_storage_bytes: 0,
+        deleted_storage_bytes: 0,
+    });
 
     let total = head.content_length().map(|v| v as u64);
     let etag = head.e_tag().map(|s| s.trim_matches('"').to_string());
@@ -275,6 +287,17 @@ async fn run_download(
                 context: None,
                 at: chrono::Utc::now().timestamp_millis(),
             })?;
+        // Usage: B 类 GetObject +1；egress 计本次 copied 字节
+        let mut b = std::collections::HashMap::new();
+        b.insert("GetObject".into(), 1u64);
+        let _ = UsageSync::record_local_delta(UsageDelta {
+            class_a: Default::default(),
+            class_b: b,
+            ingress_bytes: 0,
+            egress_bytes: copied as u64,
+            added_storage_bytes: 0,
+            deleted_storage_bytes: 0,
+        });
         offset = offset.saturating_add(copied as u64);
         emit_download(
             app,

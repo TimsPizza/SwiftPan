@@ -23,6 +23,7 @@ pub fn run() {
             crate::bridge::bg_mock_start,
             crate::bridge::download_now,
             crate::bridge::list_objects,
+            crate::bridge::list_all_objects,
             crate::bridge::delete_object,
         ])
         .setup(|app| {
