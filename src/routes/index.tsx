@@ -1,6 +1,7 @@
 import { RouteObject } from "react-router-dom";
 import { RootLayout, AppShell, AuthShell } from "./_layout";
 import App from "@/App";
+import TauriBrowser from "@/components/TauriBrowser";
 
 // Next.js-like routing structure using nested routes
 // - RootLayout provides global providers and hydration gate
@@ -15,6 +16,7 @@ export const routes: RouteObject[] = [
         element: <AppShell />,
         children: [
           { index: true, element: <App /> },
+          { path: "tauri-browser", element: <TauriBrowser /> },
           // { path: "files", element: <FilesPage /> },
           // { path: "usage", element: <UsagePage /> },
           // { path: "settings", element: <SettingsPage /> },
