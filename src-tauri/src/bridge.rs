@@ -1,30 +1,29 @@
 use crate::types::*;
-use crate::credential_vault::{CredentialBundle, VaultExportPackage, VaultState as VaultStatus};
+use crate::credential_vault::{CredentialBundle, CredentialVault, VaultExportPackage, VaultState as VaultStatus};
 use crate::upload::{NewUploadParams, UploadStatus};
 use crate::download::{NewDownloadParams, DownloadStatus};
 use crate::share::{ShareLink, ShareParams};
+use crate::r2_client;
 
 #[tauri::command]
-pub async fn vault_status() -> SpResult<VaultStatus> { Err(err_not_implemented("vault_status")) }
+pub async fn vault_status() -> SpResult<VaultStatus> { CredentialVault::status() }
 
 #[tauri::command]
-pub async fn vault_set_manual(_bundle: CredentialBundle, _master_password: String) -> SpResult<()> {
-  Err(err_not_implemented("vault_set_manual"))
+pub async fn vault_set_manual(bundle: CredentialBundle, master_password: String) -> SpResult<()> {
+  CredentialVault::set_with_plaintext(bundle, &master_password)
 }
 
 #[tauri::command]
-pub async fn vault_unlock(_master_password: String, _hold_ms: u64) -> SpResult<()> {
-  Err(err_not_implemented("vault_unlock"))
-}
+pub async fn vault_unlock(master_password: String, hold_ms: u64) -> SpResult<()> { CredentialVault::unlock(&master_password, hold_ms) }
 
 #[tauri::command]
-pub async fn vault_lock() -> SpResult<()> {
-  Err(err_not_implemented("vault_lock"))
-}
+pub async fn vault_lock() -> SpResult<()> { CredentialVault::lock() }
 
 #[tauri::command]
 pub async fn r2_sanity_check() -> SpResult<()> {
-  Err(err_not_implemented("r2_sanity_check"))
+  let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+  let client = r2_client::build_client(&bundle.r2).await?;
+  r2_client::sanity_check(&client, "swiftpan-selftest/").await
 }
 
 #[tauri::command]
@@ -50,7 +49,12 @@ pub async fn download_ctrl(_transfer_id: String, _action: String) -> SpResult<()
 pub async fn download_status(_transfer_id: String) -> SpResult<DownloadStatus> { Err(err_not_implemented("download_status")) }
 
 #[tauri::command]
-pub async fn share_generate(_params: ShareParams) -> SpResult<ShareLink> { Err(err_not_implemented("share_generate")) }
+pub async fn share_generate(params: ShareParams) -> SpResult<ShareLink> {
+  let bundle = CredentialVault::get_decrypted_bundle_if_unlocked()?;
+  let client = r2_client::build_client(&bundle.r2).await?;
+  let (url, expires_at_ms) = r2_client::presign_get_url(&client, &params.key, params.ttl_secs, params.download_filename).await?;
+  Ok(ShareLink { url, expires_at_ms })
+}
 
 #[tauri::command]
 pub async fn usage_merge_day(_date: String) -> SpResult<DailyLedger> { Err(err_not_implemented("usage_merge_day")) }
