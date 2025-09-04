@@ -1,8 +1,6 @@
 import EventBridge from "@/components/EventBridge";
-import { LoadingSpinner } from "@/components/fallback/LoadingSpinner";
 import { Sidebar } from "@/components/layout/Sidebar";
 import TransferManager from "@/components/TransferManager";
-import { useAuthStore } from "@/store/auth-store";
 import { ThemeProvider } from "next-themes";
 import { HelmetProvider } from "react-helmet-async";
 import { QueryClient, QueryClientProvider } from "react-query";
@@ -12,16 +10,6 @@ import { Toaster } from "sonner";
 const queryClient = new QueryClient();
 
 export function AppRoot() {
-  const hasStoreHydrated = useAuthStore((s) => s._hydrated);
-
-  if (!hasStoreHydrated) {
-    return (
-      <div className="bg-background flex min-h-screen items-center justify-center">
-        <LoadingSpinner size="large" text="Initializing..." />
-      </div>
-    );
-  }
-
   return (
     <QueryClientProvider client={queryClient}>
       <HelmetProvider>

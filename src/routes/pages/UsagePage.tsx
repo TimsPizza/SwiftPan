@@ -1,3 +1,5 @@
+import { TrafficTrendsChart } from "@/components/charts/TrafficTrendsChart";
+import { UsageTrendsChart } from "@/components/charts/UsageTrendsChart";
 import { Button } from "@/components/ui/Button";
 import { nv } from "@/lib/api/tauriBridge";
 import { useEffect, useMemo, useState } from "react";
@@ -20,6 +22,16 @@ export default function UsagePage() {
       { ingress: 0, egress: 0 },
     );
   }, [items]);
+
+  const trafficPoints = useMemo(
+    () =>
+      (items || []).map((d) => ({
+        date: d.date as string,
+        uploadBytes: Number(d.ingress_bytes || 0),
+        downloadBytes: Number(d.egress_bytes || 0),
+      })),
+    [items],
+  );
 
   const load = async () => {
     setLoading(true);
@@ -103,6 +115,22 @@ export default function UsagePage() {
             </tr>
           </tfoot>
         </table>
+      </div>
+
+      {/* Monthly Usage Chart (from backend daily ledgers) */}
+      <div className="rounded border">
+        <div className="p-2 text-sm font-medium">Monthly Usage Chart</div>
+        <div className="h-64 w-full">
+          <UsageTrendsChart points={items} />
+        </div>
+      </div>
+
+      {/* Monthly Traffic Chart (from backend daily ledgers) */}
+      <div className="rounded border">
+        <div className="p-2 text-sm font-medium">Monthly Traffic Chart</div>
+        <div className="h-64 w-full">
+          <TrafficTrendsChart points={trafficPoints as any} />
+        </div>
       </div>
     </div>
   );

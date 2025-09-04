@@ -45,7 +45,6 @@ export default function SettingsPage() {
     if (!parsed.success) {
       parsed.error.issues.forEach((iss) => {
         const path = (iss.path?.join(".") || "") as keyof SettingsFormValues;
-        // @ts-expect-error typed path
         setError(path, { type: "zod", message: iss.message });
       });
       return;

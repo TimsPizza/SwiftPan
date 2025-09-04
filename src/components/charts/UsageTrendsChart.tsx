@@ -1,16 +1,9 @@
-import type { TrendPoint } from "@/hooks/use-trends";
+import type { DailyLedger } from "@/lib/api/bridge";
 import { useMemo } from "react";
-import {
-  Area,
-  AreaChart,
-  Tooltip as RechartsTooltip,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-} from "recharts";
+import * as Recharts from "recharts";
 
 export interface UsageTrendsChartProps {
-  points: TrendPoint[];
+  points: DailyLedger[];
   showStorage?: boolean;
   showClassA?: boolean;
   showClassB?: boolean;
@@ -23,23 +16,36 @@ export function UsageTrendsChart({
   showClassB = true,
 }: UsageTrendsChartProps) {
   const data = useMemo(() => {
-    return (points || []).map((p) => ({
-      date: p.date,
-      storageMB: Math.max(
+    return (points || []).map((p) => {
+      const classASum = Object.values(p.class_a || {}).reduce(
+        (acc, n) => acc + (n || 0),
         0,
-        Math.round((p.peakStorageBytes ?? 0) / 1024 / 1024),
-      ),
-      classA_ops: p.classACount ?? 0,
-      classB_ops: p.classBCount ?? 0,
-    }));
+      );
+      const classBSum = Object.values(p.class_b || {}).reduce(
+        (acc, n) => acc + (n || 0),
+        0,
+      );
+      return {
+        date: p.date,
+        storageMB: Math.max(
+          0,
+          Math.round((p.peak_storage_bytes || 0) / 1024 / 1024),
+        ),
+        classA_ops: classASum,
+        classB_ops: classBSum,
+      };
+    });
   }, [points]);
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={data} margin={{ left: 0, right: 0, top: 10, bottom: 0 }}>
-        <XAxis dataKey="date" hide />
-        <YAxis hide />
-        <RechartsTooltip
+    <Recharts.ResponsiveContainer width="100%" height="100%">
+      <Recharts.AreaChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 10, bottom: 0 }}
+      >
+        <Recharts.XAxis dataKey="date" hide />
+        <Recharts.YAxis hide />
+        <Recharts.Tooltip
           formatter={(value: any, name: string) => {
             if (name === "storageMB") return [`${value} MB`, "Storage"];
             if (name === "classA_ops")
@@ -50,7 +56,7 @@ export function UsageTrendsChart({
           }}
         />
         {showStorage && (
-          <Area
+          <Recharts.Area
             type="monotone"
             dataKey="storageMB"
             stroke="var(--primary)"
@@ -59,7 +65,7 @@ export function UsageTrendsChart({
           />
         )}
         {showClassA && (
-          <Area
+          <Recharts.Area
             type="monotone"
             dataKey="classA_ops"
             stroke="var(--secondary)"
@@ -68,7 +74,7 @@ export function UsageTrendsChart({
           />
         )}
         {showClassB && (
-          <Area
+          <Recharts.Area
             type="monotone"
             dataKey="classB_ops"
             stroke="var(--success)"
@@ -76,7 +82,7 @@ export function UsageTrendsChart({
             fillOpacity={0.15}
           />
         )}
-      </AreaChart>
-    </ResponsiveContainer>
+      </Recharts.AreaChart>
+    </Recharts.ResponsiveContainer>
   );
 }
