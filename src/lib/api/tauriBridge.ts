@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ResultAsync } from "neverthrow";
-import type { DailyLedger, ShareLink } from "./bridge";
+import type { DailyLedger, ShareLink, UploadStatus } from "./bridge";
 
 export type ListPage = {
   prefix: string;
@@ -85,7 +85,7 @@ export const nv = {
       token,
       maxKeys: max,
     }),
-  list_all_objects: (max_total = 10000) =>
+  list_all_objects: (maxTotal = 10000) =>
     resultInvoke<
       {
         key: string;
@@ -95,24 +95,36 @@ export const nv = {
         is_prefix: boolean;
         protected: boolean;
       }[]
-    >("list_all_objects", { maxTotal: max_total }),
+    >("list_all_objects", { maxTotal }),
   delete_object: (key: string) => resultInvoke<void>("delete_object", { key }),
   share_generate: (params: {
     key: string;
     ttl_secs: number;
     download_filename?: string;
   }) => resultInvoke<ShareLink>("share_generate", { params }),
-  download_now: (key: string, dest_path: string) =>
-    resultInvoke<void>("download_now", { key, destPath: dest_path }),
+  // Upload controls
+  upload_new: (params: {
+    key: string;
+    source_path: string;
+    part_size: number;
+    content_type?: string;
+    content_disposition?: string;
+  }) => resultInvoke<string>("upload_new", { params }),
+  upload_ctrl: (transferId: string, action: "pause" | "resume" | "cancel") =>
+    resultInvoke<void>("upload_ctrl", { transferId, action }),
+  upload_status: (transferId: string) =>
+    resultInvoke<UploadStatus>("upload_status", { transferId }),
+  download_now: (key: string, destPath: string) =>
+    resultInvoke<void>("download_now", { key, destPath }),
   download_new: (params: {
     key: string;
     dest_path: string;
     chunk_size: number;
     expected_etag?: string;
   }) => resultInvoke<string>("download_new", { params }),
-  download_ctrl: (transfer_id: string, action: "pause" | "resume" | "cancel") =>
-    resultInvoke<void>("download_ctrl", { transfer_id, action }),
-  download_status: (transfer_id: string) =>
+  download_ctrl: (transferId: string, action: "pause" | "resume" | "cancel") =>
+    resultInvoke<void>("download_ctrl", { transferId, action }),
+  download_status: (transferId: string) =>
     resultInvoke<{
       transfer_id: string;
       key: string;
@@ -122,7 +134,7 @@ export const nv = {
       expected_etag?: string;
       observed_etag?: string;
       last_error?: unknown;
-    }>("download_status", { transfer_id }),
+    }>("download_status", { transferId }),
   usage_merge_day: (date: string) =>
     resultInvoke<DailyLedger>("usage_merge_day", { date }),
   usage_list_month: (prefix: string) =>

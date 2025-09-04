@@ -26,6 +26,11 @@ interface StoreState {
   update: (id: string, patch: Partial<TransferItem>) => void;
   remove: (id: string) => void;
   clearCompleted: () => void;
+  ui: {
+    open: boolean;
+    setOpen: (v: boolean) => void;
+    toggle: () => void;
+  };
 }
 
 export const useTransferStore = create<StoreState>((set) => ({
@@ -54,4 +59,9 @@ export const useTransferStore = create<StoreState>((set) => ({
         Object.entries(s.items).filter(([, v]) => v.state !== "completed"),
       ),
     })),
+  ui: {
+    open: false,
+    setOpen: (v: boolean) => set((s) => ({ ui: { ...s.ui, open: v } })),
+    toggle: () => set((s) => ({ ui: { ...s.ui, open: !s.ui.open } })),
+  },
 }));

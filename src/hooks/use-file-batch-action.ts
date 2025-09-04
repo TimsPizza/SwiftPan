@@ -1,5 +1,6 @@
 import type { FileItem as File } from "@/lib/api/schemas";
 import { nv } from "@/lib/api/tauriBridge";
+import { useTransferStore } from "@/store/transfer-store";
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -93,9 +94,28 @@ export const useFileBatchAction = (
       try {
         const base = await downloadDir();
         const dest = await join(base, f.filename || "download");
-        const r = await nv.download_now(f.id, dest);
+        // prevent duplicate active downloads for same key
+        const active = useTransferStore.getState().items;
+        const dup = Object.values(active).some(
+          (t) =>
+            t.type === "download" &&
+            t.key === f.id &&
+            t.state !== "completed" &&
+            t.state !== "failed",
+        );
+        if (dup) {
+          toast.info(`Already downloading: ${f.filename}`);
+          continue;
+        }
+        const r = await nv.download_new({
+          key: f.id,
+          dest_path: dest,
+          chunk_size: 4 * 1024 * 1024,
+        });
         r.match(
-          () => {},
+          () => {
+            useTransferStore.getState().ui.setOpen(true);
+          },
           (e) => {
             throw new Error(String((e as any)?.message || e));
           },
@@ -112,9 +132,27 @@ export const useFileBatchAction = (
     try {
       const base = await downloadDir();
       const dest = await join(base, file.filename || "download");
-      const r = await nv.download_now(file.id, dest);
+      const active = useTransferStore.getState().items;
+      const dup = Object.values(active).some(
+        (t) =>
+          t.type === "download" &&
+          t.key === file.id &&
+          t.state !== "completed" &&
+          t.state !== "failed",
+      );
+      if (dup) {
+        toast.info(`Already downloading: ${file.filename}`);
+        return;
+      }
+      const r = await nv.download_new({
+        key: file.id,
+        dest_path: dest,
+        chunk_size: 4 * 1024 * 1024,
+      });
       r.match(
-        () => {},
+        () => {
+          useTransferStore.getState().ui.setOpen(true);
+        },
         (e) => {
           throw new Error(String((e as any)?.message || e));
         },
