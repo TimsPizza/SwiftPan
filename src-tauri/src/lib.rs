@@ -20,6 +20,7 @@ pub fn run() {
             crate::bridge::share_generate,
             crate::bridge::usage_merge_day,
             crate::bridge::usage_list_month,
+            crate::bridge::usage_month_cost,
             crate::bridge::bg_set_limits,
             crate::bridge::bg_global,
             crate::bridge::bg_mock_start,

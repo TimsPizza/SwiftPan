@@ -147,4 +147,30 @@ export const nv = {
     resultInvoke<DailyLedger>("usage_merge_day", { date }),
   usage_list_month: (prefix: string) =>
     resultInvoke<DailyLedger[]>("usage_list_month", { prefix }),
+  usage_month_cost: (prefix: string) =>
+    resultInvoke<{
+      month: string;
+      storage: {
+        sum_peak_gb: number;
+        avg_gb_month_ceil: number;
+        free_gb_month: number;
+        billable_gb_month: number;
+        cost_usd: number;
+      };
+      class_a: {
+        total_ops: number;
+        free_ops: number;
+        billable_millions: number;
+        unit_price: number;
+        cost_usd: number;
+      };
+      class_b: {
+        total_ops: number;
+        free_ops: number;
+        billable_millions: number;
+        unit_price: number;
+        cost_usd: number;
+      };
+      total_cost_usd: number;
+    }>("usage_month_cost", { prefix }),
 };

@@ -1,4 +1,3 @@
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/Button";
 import {
   Card,
@@ -41,7 +40,10 @@ import {
 } from "@/components/ui/table";
 import { useFileBatchAction } from "@/hooks/use-file-batch-action";
 import type { FileItem as File } from "@/lib/api/schemas";
+import { nv } from "@/lib/api/tauriBridge";
 import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
+import { useTransferStore } from "@/store/transfer-store";
+import { open } from "@tauri-apps/plugin-dialog";
 import { motion } from "framer-motion";
 import {
   ArrowUpDown,
@@ -136,6 +138,7 @@ export const FileList = ({ files }: FileListProps) => {
   );
   const [minSizeMB, setMinSizeMB] = useState<string>("");
   const [maxSizeMB, setMaxSizeMB] = useState<string>("");
+  const setTransfersOpen = useTransferStore((s) => s.ui.setOpen);
 
   const getCategory = (
     filename: string,
@@ -300,6 +303,49 @@ export const FileList = ({ files }: FileListProps) => {
     setDeleteDialogOpen(false);
   };
 
+  const handleUploadClick = async () => {
+    const picked = await open({ multiple: true });
+    const selected = picked ? (Array.isArray(picked) ? picked : [picked]) : [];
+    if (selected.length === 0) return;
+    const bucketKeys = new Set(files.map((f) => f.id));
+    const storeItems = useTransferStore.getState().items;
+    for (const p of selected) {
+      const filePath = String(p);
+      const fileName = filePath.split("/").pop() || filePath;
+      const key = fileName;
+      if (bucketKeys.has(key)) {
+        toast.error(`File already exists: ${key}`);
+        continue;
+      }
+      const dup = Object.values(storeItems).some(
+        (t) =>
+          t.type === "upload" &&
+          t.key === key &&
+          t.state !== "completed" &&
+          t.state !== "failed",
+      );
+      if (dup) {
+        toast.info(`Already uploading: ${key}`);
+        continue;
+      }
+      const res = await nv.upload_new({
+        key,
+        source_path: filePath,
+        part_size: 8 * 1024 * 1024,
+      });
+      res.match(
+        () => {
+          toast.success(`Upload started: ${fileName}`);
+          setTransfersOpen(true);
+        },
+        (e) => {
+          console.error(e);
+          toast.error(`Upload failed to start: ${fileName}`);
+        },
+      );
+    }
+  };
+
   if (!files || files.length === 0) {
     return (
       <Card>
@@ -315,13 +361,28 @@ export const FileList = ({ files }: FileListProps) => {
   }
 
   return (
-    <div id="file-list-container" className="flex">
-      <Card>
-        <CardHeader>
-          <CardTitle>Files ({processedFiles.length})</CardTitle>
+    <div id="file-list-container" className="flex w-full">
+      <Card className="flex w-full min-w-0 flex-col gap-4">
+        <CardHeader className="flex flex-col gap-2">
+          <CardTitle className="flex w-full items-center justify-between">
+            Files ({processedFiles.length}){" "}
+            <div className="ml-auto">
+              <Button onClick={handleUploadClick} size="sm">
+                Upload
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => useTransferStore.getState().ui.toggle()}
+              >
+                Transfers
+              </Button>
+            </div>
+          </CardTitle>
           <CardDescription>Manage your uploaded files</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex w-full flex-col gap-4">
+          {/* filter controls */}
           <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
             <div className="flex items-center gap-2">
               <Input
@@ -366,7 +427,7 @@ export const FileList = ({ files }: FileListProps) => {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-end gap-2">
               <Input
                 type="number"
                 inputMode="numeric"
@@ -384,6 +445,7 @@ export const FileList = ({ files }: FileListProps) => {
             </div>
           </div>
 
+          {/* batch actions */}
           {batch.selectedCount > 0 && (
             <div className="mb-3 flex items-center justify-between rounded-md border p-2">
               <div className="text-sm">
@@ -438,186 +500,213 @@ export const FileList = ({ files }: FileListProps) => {
             </div>
           )}
 
-          <Table>
-            <TableHeader className="m-auto">
-              <TableRow>
-                <TableHead className="w-10">
-                  <input
-                    type="checkbox"
-                    aria-label="Select all"
-                    className="size-4 cursor-pointer"
-                    checked={batch.allVisibleSelected}
-                    onChange={batch.toggleAllVisible}
-                  />
-                </TableHead>
-                <TableHead
-                  onClick={() => toggleSort("name")}
-                  className="cursor-pointer select-none"
-                  aria-sort={
-                    sortBy === "name"
-                      ? sortOrder === "asc"
-                        ? "ascending"
-                        : "descending"
-                      : "none"
-                  }
-                >
-                  <div className="flex items-center gap-1">
-                    File {renderSortIcon("name")}
-                  </div>
-                </TableHead>
-                <TableHead
-                  onClick={() => toggleSort("type")}
-                  className="m-auto hidden cursor-pointer select-none md:table-cell"
-                  aria-sort={
-                    sortBy === "type"
-                      ? sortOrder === "asc"
-                        ? "ascending"
-                        : "descending"
-                      : "none"
-                  }
-                >
-                  <div className="flex items-center gap-1">
-                    Type {renderSortIcon("type")}
-                  </div>
-                </TableHead>
-                <TableHead
-                  onClick={() => toggleSort("size")}
-                  className="m-auto cursor-pointer select-none"
-                  aria-sort={
-                    sortBy === "size"
-                      ? sortOrder === "asc"
-                        ? "ascending"
-                        : "descending"
-                      : "none"
-                  }
-                >
-                  <div className="flex items-center gap-1">
-                    Size {renderSortIcon("size")}
-                  </div>
-                </TableHead>
-                <TableHead
-                  onClick={() => toggleSort("uploadedAt")}
-                  className="m-auto hidden cursor-pointer select-none lg:table-cell"
-                  aria-sort={
-                    sortBy === "uploadedAt"
-                      ? sortOrder === "asc"
-                        ? "ascending"
-                        : "descending"
-                      : "none"
-                  }
-                >
-                  <div className="flex items-center gap-1">
-                    Uploaded {renderSortIcon("uploadedAt")}
-                  </div>
-                </TableHead>
-                <TableHead className="text-center">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pagedFiles.map((file, index) => (
-                <motion.tr
-                  key={file.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
-                  className="group"
-                >
-                  <TableCell>
+          {/* Desktop table */}
+          <div className="hidden w-full min-w-0 shrink md:!flex">
+            <Table className="w-full min-w-0">
+              <TableHeader className="m-auto">
+                <TableRow>
+                  <TableHead className="w-10">
                     <input
                       type="checkbox"
-                      aria-label={`Select ${file.filename}`}
+                      aria-label="Select all"
                       className="size-4 cursor-pointer"
-                      checked={batch.selectedIds.has(file.id)}
-                      onChange={() => batch.toggleOne(file.id)}
+                      checked={batch.allVisibleSelected}
+                      onChange={batch.toggleAllVisible}
                     />
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-3">
-                      {getFileIcon(file.filename)}
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">
-                          {truncateFilename(file.filename, 40)}
-                        </p>
-                        <p className="text-muted-foreground text-xs">
-                          {file.id}
-                        </p>
+                  </TableHead>
+                  <TableHead
+                    onClick={() => toggleSort("name")}
+                    className="cursor-pointer select-none"
+                    aria-sort={
+                      sortBy === "name"
+                        ? sortOrder === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
+                    <div className="flex items-center gap-1">
+                      File {renderSortIcon("name")}
+                    </div>
+                  </TableHead>
+                  <TableHead
+                    onClick={() => toggleSort("size")}
+                    className="m-auto cursor-pointer select-none"
+                    aria-sort={
+                      sortBy === "size"
+                        ? sortOrder === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
+                    <div className="flex items-center gap-1">
+                      Size {renderSortIcon("size")}
+                    </div>
+                  </TableHead>
+                  <TableHead
+                    onClick={() => toggleSort("uploadedAt")}
+                    className="m-auto hidden cursor-pointer select-none lg:table-cell"
+                    aria-sort={
+                      sortBy === "uploadedAt"
+                        ? sortOrder === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                  >
+                    <div className="flex items-center gap-1">
+                      Uploaded {renderSortIcon("uploadedAt")}
+                    </div>
+                  </TableHead>
+                  <TableHead className="text-center">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pagedFiles.map((file, index) => (
+                  <motion.tr
+                    key={file.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.05 }}
+                    className="group"
+                  >
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${file.filename}`}
+                        className="size-4 cursor-pointer"
+                        checked={batch.selectedIds.has(file.id)}
+                        onChange={() => batch.toggleOne(file.id)}
+                      />
+                    </TableCell>
+                    <TableCell className="min-w-0 whitespace-normal!">
+                      <div className="flex min-w-0 items-center gap-3">
+                        {getFileIcon(file.filename)}
+                        <div className="flex min-w-0 flex-col">
+                          <p className="line-clamp-1 text-sm font-medium break-all">
+                            {truncateFilename(file.filename, 40)}
+                          </p>
+                          <p className="text-muted-foreground text-xs break-all">
+                            {file.id}
+                          </p>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm font-medium">
+                        {formatBytes(file.size)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      <span className="text-muted-foreground text-sm">
+                        {formatRelativeTime(file.uploadedAt)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {/* Inline actions on medium and larger screens */}
+                      <div className="hidden items-center justify-center gap-1 md:flex">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDownload(file.id)}
+                          aria-label="Download"
+                          title="Download"
+                        >
+                          <DownloadIcon className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteClick(file)}
+                          aria-label="Delete"
+                          title="Delete"
+                        >
+                          <TrashIcon className="h-4 w-4" />
+                        </Button>
+                      </div>
+
+                      {/* Condensed dropdown on small screens */}
+                      <div className="md:hidden">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={() => handleDownload(file.id)}
+                            >
+                              <DownloadIcon className="mr-2 h-4 w-4" />
+                              Download
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => handleDeleteClick(file)}
+                              className="text-destructive focus:text-destructive"
+                            >
+                              <TrashIcon className="mr-2 h-4 w-4" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </TableCell>
+                  </motion.tr>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* Mobile list */}
+          <div className="space-y-2 md:!hidden">
+            {pagedFiles.map((file) => (
+              <div key={file.id} className="rounded border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {getFileIcon(file.filename)}
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">
+                        {truncateFilename(file.filename, 36)}
+                      </div>
+                      <div className="text-muted-foreground truncate text-xs">
+                        {file.id}
                       </div>
                     </div>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <Badge
-                      variant="secondary"
-                      className={getFileTypeColor(file.filename)}
-                    >
-                      {file.mimeType === "unknown"
-                        ? "unknown"
-                        : file.filename.split(".").pop()?.toUpperCase() ||
-                          "FILE"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-sm font-medium">
-                      {formatBytes(file.size)}
-                    </span>
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell">
-                    <span className="text-muted-foreground text-sm">
-                      {formatRelativeTime(file.uploadedAt)}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {/* Inline actions on medium and larger screens */}
-                    <div className="hidden items-center justify-center gap-1 md:flex">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDownload(file.id)}
-                        aria-label="Download"
-                        title="Download"
-                      >
-                        <DownloadIcon className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDeleteClick(file)}
-                        aria-label="Delete"
-                        title="Delete"
-                      >
-                        <TrashIcon className="h-4 w-4" />
-                      </Button>
-                    </div>
-
-                    {/* Condensed dropdown on small screens */}
-                    <div className="md:hidden">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="sm">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => handleDownload(file.id)}
-                          >
-                            <DownloadIcon className="mr-2 h-4 w-4" />
-                            Download
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleDeleteClick(file)}
-                            className="text-destructive focus:text-destructive"
-                          >
-                            <TrashIcon className="mr-2 h-4 w-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </TableCell>
-                </motion.tr>
-              ))}
-            </TableBody>
-          </Table>
+                  </div>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${file.filename}`}
+                    className="size-4"
+                    checked={batch.selectedIds.has(file.id)}
+                    onChange={() => batch.toggleOne(file.id)}
+                  />
+                </div>
+                <div className="mt-2 flex items-center justify-between text-xs">
+                  <span>{formatBytes(file.size)}</span>
+                  <span className="text-muted-foreground">
+                    {formatRelativeTime(file.uploadedAt)}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-center justify-end gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDownload(file.id)}
+                  >
+                    <DownloadIcon className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDeleteClick(file)}
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
 
           {/* Pagination Controls */}
           <div className="mt-4 flex items-center justify-between">
@@ -650,6 +739,7 @@ export const FileList = ({ files }: FileListProps) => {
         </CardContent>
       </Card>
 
+      {/* delete dialog */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>

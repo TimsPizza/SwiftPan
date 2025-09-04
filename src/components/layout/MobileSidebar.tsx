@@ -10,7 +10,7 @@ import { MoonIcon, SunIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { NavLink, useLocation } from "react-router-dom";
 
-export const Sidebar = () => {
+export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
   const toggleTheme = () => {
@@ -25,32 +25,29 @@ export const Sidebar = () => {
   ];
 
   return (
-    <div className="bg-sidebar text-sidebar-foreground border-sidebar-border flex h-full w-56 flex-col border-r p-4">
-      <div className="flex min-h-0 flex-1 flex-col gap-2">
-        <div className="mb-4 flex items-center gap-2 px-2">
-          <DashboardIcon className="text-sidebar-primary h-5 w-5" />
-          <h2 className="text-lg font-semibold tracking-tight">Navigation</h2>
-        </div>
-
+    <div className="text-foreground bg-background flex h-full w-[240px] max-w-[320px] flex-col py-3 pr-3">
+      <div className="mb-3 flex items-center gap-2 px-1">
+        <DashboardIcon className="h-5 w-5" />
+        <h2 className="text-base font-semibold tracking-tight">Menu</h2>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-1">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = location.pathname === item.href;
-
           return (
-            <NavLink key={item.href} to={item.href}>
+            <NavLink key={item.href} to={item.href} onClick={onNavigate}>
               <Button
                 variant={"ghost"}
                 className={cn(
-                  "text-sidebar-foreground h-12 w-full cursor-pointer justify-start gap-3",
-                  isActive &&
-                    "bg-sidebar-primary/40 hover:!bg-sidebar-primary/20 text-sidebar-secondary",
+                  "h-11 w-full cursor-pointer justify-start gap-3 rounded-md",
+                  isActive && "bg-primary/15 hover:bg-primary/20 text-primary",
                 )}
               >
                 <Icon className="h-5 w-5" />
                 <span
                   className={cn(
                     "text-sm",
-                    isActive ? "font-bold" : "font-medium",
+                    isActive ? "font-semibold" : "font-medium",
                   )}
                 >
                   {item.label}
@@ -60,7 +57,7 @@ export const Sidebar = () => {
           );
         })}
       </div>
-      <div className="mt-auto ml-auto flex items-center gap-2">
+      <div className="mt-auto flex items-center justify-end gap-2">
         <Button
           variant="outline"
           size="icon"
@@ -68,12 +65,14 @@ export const Sidebar = () => {
           aria-label="Toggle theme"
         >
           {theme === "dark" ? (
-            <SunIcon width="24" height="24" />
+            <SunIcon width="20" height="20" />
           ) : (
-            <MoonIcon width="24" height="24" />
+            <MoonIcon width="20" height="20" />
           )}
         </Button>
       </div>
     </div>
   );
-};
+}
+
+export default MobileSidebar;

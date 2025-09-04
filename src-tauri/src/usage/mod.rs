@@ -1,5 +1,6 @@
 use crate::types::*;
 use crate::{r2_client, sp_backend::SpBackend};
+use chrono::Datelike;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -109,29 +110,19 @@ impl UsageSync {
         let client = r2_client::build_client(&bundle.r2).await?;
         let key = format!("{}{}.json", ANALYTICS_PREFIX, date);
 
-        // Ensure file exists
+        // Ensure file exists (with month-initial baseline if needed)
         let _ = r2_client::put_object_bytes(
             &client,
             &key,
-            serde_json::to_vec(&DailyLedger {
-                date: date.into(),
-                class_a: Default::default(),
-                class_b: Default::default(),
-                ingress_bytes: 0,
-                egress_bytes: 0,
-                storage_bytes: 0,
-                peak_storage_bytes: 0,
-                deleted_storage_bytes: 0,
-                rev: 1,
-                updated_at: chrono::Utc::now().to_rfc3339(),
-            })
-            .map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("serialize empty ledger failed: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?,
+            serde_json::to_vec(&initial_ledger_with_baseline(&client, date).await?).map_err(
+                |e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("serialize empty ledger failed: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                },
+            )?,
             None,
             true,
         )
@@ -276,6 +267,73 @@ impl UsageSync {
 
         Ok(out)
     }
+
+    pub async fn month_cost(prefix: &str) -> SpResult<serde_json::Value> {
+        // Read month (cached) and compute cost per R2 logic
+        let days = Self::list_month(prefix).await?;
+        // Storage: sum daily peak_storage_bytes (GB) / 30 → avg GB-month; ceil to integer; subtract free 10 GB-month (floor at 0)
+        let sum_peak_gb: f64 = days
+            .iter()
+            .map(|d| (d.peak_storage_bytes as f64) / (1024.0 * 1024.0 * 1024.0))
+            .sum();
+        let avg_gb_month = (sum_peak_gb / 30.0).ceil();
+        let free_gb = 10.0_f64;
+        let billable_gb = (avg_gb_month - free_gb).max(0.0);
+        let storage_cost = billable_gb * 0.0; // If Standard cost per GB-month is desired later, set here; currently only usage breakdown
+
+        // Ops: sum class_a/b; apply free tiers 1m/10m, then ceil to next million
+        let total_a: u64 = days
+            .iter()
+            .map(|d| d.class_a.values().copied().sum::<u64>())
+            .sum();
+        let total_b: u64 = days
+            .iter()
+            .map(|d| d.class_b.values().copied().sum::<u64>())
+            .sum();
+        let free_a: u64 = 1_000_000;
+        let free_b: u64 = 10_000_000;
+        let over_a = total_a.saturating_sub(free_a);
+        let over_b = total_b.saturating_sub(free_b);
+        let units_a_m = if over_a == 0 {
+            0
+        } else {
+            (over_a + 1_000_000 - 1) / 1_000_000
+        } as u64;
+        let units_b_m = if over_b == 0 {
+            0
+        } else {
+            (over_b + 1_000_000 - 1) / 1_000_000
+        } as u64;
+        let cost_a = (units_a_m as f64) * 4.50;
+        let cost_b = (units_b_m as f64) * 0.36;
+
+        let report = serde_json::json!({
+            "month": prefix,
+            "storage": {
+                "sum_peak_gb": sum_peak_gb,
+                "avg_gb_month_ceil": avg_gb_month,
+                "free_gb_month": free_gb,
+                "billable_gb_month": billable_gb,
+                "cost_usd": storage_cost,
+            },
+            "class_a": {
+                "total_ops": total_a,
+                "free_ops": free_a,
+                "billable_millions": units_a_m,
+                "unit_price": 4.50,
+                "cost_usd": cost_a,
+            },
+            "class_b": {
+                "total_ops": total_b,
+                "free_ops": free_b,
+                "billable_millions": units_b_m,
+                "unit_price": 0.36,
+                "cost_usd": cost_b,
+            },
+            "total_cost_usd": storage_cost + cost_a + cost_b,
+        });
+        Ok(report)
+    }
 }
 
 fn app_dir() -> SpResult<PathBuf> {
@@ -345,6 +403,86 @@ fn write_usage_state(date: &str) -> SpResult<()> {
     })?;
     fs::write(p, bytes).map_err(ioe)?;
     Ok(())
+}
+
+async fn initial_ledger_with_baseline(
+    client: &crate::r2_client::R2Client,
+    date: &str,
+) -> SpResult<DailyLedger> {
+    // Determine if this is month start
+    let is_month_start = date.ends_with("-01");
+    let mut baseline_storage: u64 = 0;
+    if is_month_start {
+        // Try inherit from previous month last day
+        if let Some(prev_day) = prev_month_last_day(date) {
+            let prev_key = format!("{}{}.json", ANALYTICS_PREFIX, prev_day);
+            if let Ok((bytes, _)) = r2_client::get_object_bytes(client, &prev_key).await {
+                if let Ok(prev) = serde_json::from_slice::<DailyLedger>(&bytes) {
+                    // baseline = peak_storage_bytes - deleted_storage_bytes (policy)
+                    baseline_storage = prev
+                        .peak_storage_bytes
+                        .saturating_sub(prev.deleted_storage_bytes);
+                }
+            }
+        }
+        // If no prior ledger, fallback to full bucket scan
+        if baseline_storage == 0 {
+            baseline_storage = compute_bucket_total_storage(client).await?;
+        }
+    }
+    Ok(DailyLedger {
+        date: date.into(),
+        class_a: Default::default(),
+        class_b: Default::default(),
+        ingress_bytes: 0,
+        egress_bytes: 0,
+        storage_bytes: baseline_storage,
+        peak_storage_bytes: baseline_storage,
+        deleted_storage_bytes: 0,
+        rev: 1,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+fn prev_month_last_day(date: &str) -> Option<String> {
+    // date in YYYY-MM-DD UTC
+    let dt = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let first = chrono::NaiveDate::from_ymd_opt(dt.year(), dt.month(), 1)?;
+    let prev = first.pred_opt()?; // last day of previous month
+    Some(prev.format("%Y-%m-%d").to_string())
+}
+
+async fn compute_bucket_total_storage(client: &crate::r2_client::R2Client) -> SpResult<u64> {
+    // List all objects and sum sizes; paginate until done
+    let mut token: Option<String> = None;
+    let mut total: u64 = 0;
+    loop {
+        let mut req = client
+            .s3
+            .list_objects_v2()
+            .bucket(&client.bucket)
+            .max_keys(1000);
+        if let Some(t) = token.clone() {
+            req = req.continuation_token(t);
+        }
+        let out = req.send().await.map_err(|e| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("ListObjectsV2 (total storage): {e}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        for o in out.contents() {
+            if let Some(sz) = o.size() {
+                total = total.saturating_add(sz as u64);
+            }
+        }
+        token = out.next_continuation_token().map(|s| s.to_string());
+        if token.is_none() {
+            break;
+        }
+    }
+    Ok(total)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

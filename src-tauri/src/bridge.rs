@@ -180,6 +180,11 @@ pub async fn usage_list_month(prefix: String) -> SpResult<Vec<DailyLedger>> {
 }
 
 #[tauri::command]
+pub async fn usage_month_cost(prefix: String) -> SpResult<serde_json::Value> {
+    crate::usage::UsageSync::month_cost(&prefix).await
+}
+
+#[tauri::command]
 pub async fn bg_set_limits(_limits: serde_json::Value, _rate: serde_json::Value) -> SpResult<()> {
     Err(err_not_implemented("bg_set_limits"))
 }
