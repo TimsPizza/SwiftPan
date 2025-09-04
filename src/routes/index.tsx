@@ -1,5 +1,5 @@
+import { AppRoot } from "@/routes/_layout";
 import { Navigate, RouteObject } from "react-router-dom";
-import { AppShell, AuthShell, RootLayout } from "./_layout";
 import FilesPage from "./pages/FilesPage";
 import SettingsPage from "./pages/SettingsPage";
 import UsagePage from "./pages/UsagePage";
@@ -11,24 +11,12 @@ import UsagePage from "./pages/UsagePage";
 
 export const routes: RouteObject[] = [
   {
-    element: <RootLayout />,
+    element: <AppRoot />,
     children: [
-      {
-        element: <AppShell />,
-        children: [
-          { index: true, element: <Navigate to="/files" replace /> },
-          { path: "files", element: <FilesPage /> },
-          { path: "usage", element: <UsagePage /> },
-          { path: "settings", element: <SettingsPage /> },
-        ],
-      },
-      {
-        element: <AuthShell />,
-        children: [
-          // { path: "login", element: <LoginPage /> },
-          // { path: "setup", element: <SetupPage /> },
-        ],
-      },
+      { index: true, element: <Navigate to="/files" replace /> },
+      { path: "files", element: <FilesPage /> },
+      { path: "usage", element: <UsagePage /> },
+      { path: "settings", element: <SettingsPage /> },
     ],
   },
 ];

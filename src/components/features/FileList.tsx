@@ -47,7 +47,6 @@ import {
   ArrowUpDown,
   ChevronDown,
   ChevronUp,
-  CopyIcon,
   DownloadIcon,
   FileIcon,
   FileText,
@@ -277,10 +276,8 @@ export const FileList = ({ files }: FileListProps) => {
     );
   };
 
-  const handleCopyLink = async (_fileId: string, _filename: string) => {};
-
   // Prefer hook's downloadOne to avoid new tab navigation
-  const handleDownload = async (fileId: string, filename: string) => {
+  const handleDownload = async (fileId: string) => {
     const file = processedFiles.find((f) => f.id === fileId);
     if (!file) {
       toast.error("File not found");
@@ -318,7 +315,7 @@ export const FileList = ({ files }: FileListProps) => {
   }
 
   return (
-    <div className="space-y-4">
+    <div id="file-list-container" className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>Files ({processedFiles.length})</CardTitle>
@@ -574,20 +571,11 @@ export const FileList = ({ files }: FileListProps) => {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => handleDownload(file.id, file.filename)}
+                        onClick={() => handleDownload(file.id)}
                         aria-label="Download"
                         title="Download"
                       >
                         <DownloadIcon className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleCopyLink(file.id, file.filename)}
-                        aria-label="Copy link"
-                        title="Copy link"
-                      >
-                        <CopyIcon className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
@@ -610,20 +598,10 @@ export const FileList = ({ files }: FileListProps) => {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem
-                            onClick={() =>
-                              handleDownload(file.id, file.filename)
-                            }
+                            onClick={() => handleDownload(file.id)}
                           >
                             <DownloadIcon className="mr-2 h-4 w-4" />
                             Download
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() =>
-                              handleCopyLink(file.id, file.filename)
-                            }
-                          >
-                            <CopyIcon className="mr-2 h-4 w-4" />
-                            Copy Link
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => handleDeleteClick(file)}
