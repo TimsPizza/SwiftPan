@@ -43,6 +43,7 @@ export const useFileBatchAction = (
   );
 
   const selectedCount = selectedIds.size;
+  // Global download events handled by EventBridge
 
   // prune selection when files change
   useEffect(() => {

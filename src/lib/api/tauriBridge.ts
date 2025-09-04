@@ -104,6 +104,25 @@ export const nv = {
   }) => resultInvoke<ShareLink>("share_generate", { params }),
   download_now: (key: string, dest_path: string) =>
     resultInvoke<void>("download_now", { key, destPath: dest_path }),
+  download_new: (params: {
+    key: string;
+    dest_path: string;
+    chunk_size: number;
+    expected_etag?: string;
+  }) => resultInvoke<string>("download_new", { params }),
+  download_ctrl: (transfer_id: string, action: "pause" | "resume" | "cancel") =>
+    resultInvoke<void>("download_ctrl", { transfer_id, action }),
+  download_status: (transfer_id: string) =>
+    resultInvoke<{
+      transfer_id: string;
+      key: string;
+      bytes_total?: number;
+      bytes_done: number;
+      rate_bps: number;
+      expected_etag?: string;
+      observed_etag?: string;
+      last_error?: unknown;
+    }>("download_status", { transfer_id }),
   usage_merge_day: (date: string) =>
     resultInvoke<DailyLedger>("usage_merge_day", { date }),
   usage_list_month: (prefix: string) =>

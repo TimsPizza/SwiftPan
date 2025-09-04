@@ -1,6 +1,8 @@
+import EventBridge from "@/components/EventBridge";
 import { LoadingSpinner } from "@/components/fallback/LoadingSpinner";
 import { AppLayout } from "@/components/layouts/AppLayout";
 import { AuthLayout } from "@/components/layouts/AuthLayout";
+import TransferManager from "@/components/TransferManager";
 import { useAuthStore } from "@/store/auth-store";
 import { ThemeProvider } from "next-themes";
 import { ReactNode } from "react";
@@ -27,6 +29,8 @@ export function RootLayout({ children }: { children?: ReactNode }) {
       <HelmetProvider>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           {children ?? <Outlet />}
+          <EventBridge />
+          <TransferManager />
           <Toaster richColors position="top-center" />
         </ThemeProvider>
       </HelmetProvider>
