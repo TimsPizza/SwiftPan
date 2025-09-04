@@ -72,6 +72,14 @@ export const nv = {
       masterPassword,
     }),
   backend_status: () => resultInvoke("backend_status"),
+  backend_credentials_redacted: () =>
+    resultInvoke<{
+      endpoint: string;
+      access_key_id: string;
+      secret_access_key: string;
+      bucket: string;
+      region?: string;
+    }>("backend_credentials_redacted"),
   vault_set_manual: (bundle: unknown, masterPassword: string) =>
     resultInvoke<void>("vault_set_manual", {
       bundle,

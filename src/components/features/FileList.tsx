@@ -315,7 +315,7 @@ export const FileList = ({ files }: FileListProps) => {
   }
 
   return (
-    <div id="file-list-container" className="space-y-4">
+    <div id="file-list-container" className="flex">
       <Card>
         <CardHeader>
           <CardTitle>Files ({processedFiles.length})</CardTitle>

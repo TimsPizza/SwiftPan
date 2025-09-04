@@ -104,7 +104,7 @@ export default function FilesPage() {
       </div>
     );
   return (
-    <div>
+    <div className="flex min-h-0 w-full flex-col">
       {Toolbar}
       <FileList files={files} />
     </div>

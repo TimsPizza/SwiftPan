@@ -14,7 +14,7 @@ export function AppRoot() {
     <QueryClientProvider client={queryClient}>
       <HelmetProvider>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <div className="bg-background flex h-screen">
+          <div className="bg-background flex h-screen w-full">
             <Sidebar />
             <div className="flex min-h-0 flex-1 flex-col">
               <main className="bg-muted/20 flex-1 overflow-y-auto p-6">

@@ -10,7 +10,6 @@ export default function SettingsPage() {
     handleSubmit,
     setError,
     formState: { errors },
-    getValues,
   } = useForm<SettingsFormValues>({
     defaultValues: {
       endpoint: "",
@@ -23,14 +22,25 @@ export default function SettingsPage() {
     },
     mode: "onBlur",
   });
-  const [status, setStatus] = useState<any>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [redacted, setRedacted] = useState<null | {
+    endpoint: string;
+    access_key_id: string;
+    secret_access_key: string;
+    bucket: string;
+    region?: string;
+  }>(null);
 
   const refreshStatus = async () => {
     const r = await nv.backend_status();
     r.match(
-      (s) => setStatus(s as any),
+      () => {},
       (e) => setMsg(String((e as any)?.message || e)),
+    );
+    const rc = await nv.backend_credentials_redacted();
+    rc.match(
+      (ok) => setRedacted(ok),
+      () => setRedacted(null),
     );
   };
 
@@ -97,7 +107,9 @@ export default function SettingsPage() {
         <div>
           <input
             className="w-full rounded border px-2 py-1"
-            placeholder="https://<account>.r2.cloudflarestorage.com"
+            placeholder={
+              redacted?.endpoint || "https://<account>.r2.cloudflarestorage.com"
+            }
             {...register("endpoint")}
           />
           {errors.endpoint && (
@@ -111,6 +123,7 @@ export default function SettingsPage() {
         <div>
           <input
             className="w-full rounded border px-2 py-1"
+            placeholder={redacted?.access_key_id || "Access Key ID"}
             {...register("access_key_id")}
           />
           {errors.access_key_id && (
@@ -125,6 +138,7 @@ export default function SettingsPage() {
           <input
             className="w-full rounded border px-2 py-1"
             type="password"
+            placeholder={redacted?.secret_access_key || "Secret Access Key"}
             {...register("secret_access_key")}
           />
           {errors.secret_access_key && (
@@ -138,6 +152,7 @@ export default function SettingsPage() {
         <div>
           <input
             className="w-full rounded border px-2 py-1"
+            placeholder={redacted?.bucket || "Bucket"}
             {...register("bucket")}
           />
           {errors.bucket && (
@@ -151,6 +166,7 @@ export default function SettingsPage() {
         <div>
           <input
             className="w-full rounded border px-2 py-1"
+            placeholder={redacted?.region || "Region"}
             {...register("region")}
           />
           {errors.region && (

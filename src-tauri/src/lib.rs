@@ -4,6 +4,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             crate::bridge::backend_status,
+            crate::bridge::backend_credentials_redacted,
             crate::bridge::backend_set_credentials,
             crate::bridge::vault_status,     // legacy shim
             crate::bridge::vault_set_manual, // legacy shim

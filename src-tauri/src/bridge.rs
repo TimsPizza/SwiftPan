@@ -12,6 +12,65 @@ pub async fn backend_status() -> SpResult<BackendStatus> {
     SpBackend::status()
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RedactedCredentials {
+    pub endpoint: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub bucket: String,
+    pub region: Option<String>,
+}
+
+fn redact_endpoint(ep: &str) -> String {
+    // Protect the account segment (subdomain) while preserving provider host to disambiguate.
+    // https://<account>.r2.cloudflarestorage.com → https://*****.r2.cloudflarestorage.com
+    if let Some(rest) = ep.strip_prefix("https://") {
+        if let Some(idx) = rest.find('.') {
+            let host_tail = &rest[idx..];
+            return format!("https://{}{}", "*****", host_tail);
+        }
+    }
+    // Fallback: partial mask of any alnum run before first dot
+    let mut parts = ep.splitn(2, '.');
+    if let Some(first) = parts.next() {
+        let tail = parts.next().unwrap_or("");
+        let masked = if first.starts_with("http") {
+            first.to_string()
+        } else {
+            "*****".into()
+        };
+        if tail.is_empty() {
+            masked
+        } else {
+            format!("{}.{}", masked, tail)
+        }
+    } else {
+        "*****".into()
+    }
+}
+
+fn redact_key(s: &str) -> String {
+    let n = s.len();
+    if n <= 4 {
+        return "****".into();
+    }
+    let keep = 4usize;
+    let head = &s[..keep.min(n)];
+    format!("{}{}", head, "*".repeat(n.saturating_sub(keep)))
+}
+
+#[tauri::command]
+pub async fn backend_credentials_redacted() -> SpResult<RedactedCredentials> {
+    let b = SpBackend::get_decrypted_bundle_if_unlocked()?;
+    Ok(RedactedCredentials {
+        endpoint: redact_endpoint(&b.r2.endpoint),
+        access_key_id: redact_key(&b.r2.access_key_id),
+        secret_access_key: redact_key(&b.r2.secret_access_key),
+        bucket: redact_key(&b.r2.bucket),
+        region: b.r2.region,
+    })
+}
+
 // Save encrypted credentials (replaces vault_set_manual)
 #[tauri::command]
 pub async fn backend_set_credentials(
