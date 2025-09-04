@@ -195,18 +195,85 @@ impl UsageSync {
     }
 
     pub async fn list_month(prefix: &str) -> SpResult<Vec<DailyLedger>> {
-        // Simple: iterate days 01..31 and GET existing
+        // Cache month data on disk to minimize R2 GETs.
+        // Strategy:
+        // - List existing days once using ListObjectsV2; don't probe 1..31 blindly.
+        // - For current month: always fetch today's record fresh; earlier days from cache or fetched once and cached.
+        // - For past months: serve from cache, fetch-and-cache missing only for days that exist.
+        let today = chrono::Utc::now();
+        let today_month = today.format("%Y-%m").to_string();
+        let today_day: u32 = today.format("%d").to_string().parse().unwrap_or(32);
+        let is_current_month = prefix == today_month;
+
         let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
         let client = r2_client::build_client(&bundle.r2).await?;
-        let mut out = vec![];
-        for day in 1..=31u32 {
-            let key = format!("{}{}-{:02}.json", ANALYTICS_PREFIX, prefix, day);
-            if let Ok((bytes, _)) = r2_client::get_object_bytes(&client, &key).await {
-                if let Ok(v) = serde_json::from_slice::<DailyLedger>(&bytes) {
-                    out.push(v);
+
+        // List existing objects for this month
+        let list_prefix = format!("{}{}-", ANALYTICS_PREFIX, prefix);
+        let resp = client
+            .s3
+            .list_objects_v2()
+            .bucket(&client.bucket)
+            .prefix(&list_prefix)
+            .max_keys(64)
+            .send()
+            .await
+            .map_err(|e| SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("ListObjectsV2 (usage month) failed: {e}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+
+        let mut days_present: Vec<u32> = vec![];
+        for o in resp.contents() {
+            if let Some(key) = o.key() {
+                // Expect analytics/daily/YYYY-MM-DD.json
+                if let Some(day_str) = key.strip_prefix(&list_prefix) {
+                    if let Some(day_part) = day_str.strip_suffix(".json") {
+                        if let Ok(d) = day_part.parse::<u32>() {
+                            days_present.push(d);
+                        }
+                    }
                 }
             }
         }
+        days_present.sort_unstable();
+
+        let mut out: Vec<DailyLedger> = Vec::new();
+        let mut cache = read_month_cache(prefix).unwrap_or_default();
+        let mut dirty = false;
+
+        for day in days_present {
+            if is_current_month && day == today_day {
+                // Always fetch today's record fresh
+                let key = format!("{}{}-{:02}.json", ANALYTICS_PREFIX, prefix, day);
+                if let Ok((bytes, _)) = r2_client::get_object_bytes(&client, &key).await {
+                    if let Ok(v) = serde_json::from_slice::<DailyLedger>(&bytes) {
+                        out.push(v);
+                    }
+                }
+                continue;
+            }
+            if let Some(v) = cache.days.get(&day) {
+                out.push(v.clone());
+                continue;
+            }
+            let key = format!("{}{}-{:02}.json", ANALYTICS_PREFIX, prefix, day);
+            if let Ok((bytes, _)) = r2_client::get_object_bytes(&client, &key).await {
+                if let Ok(v) = serde_json::from_slice::<DailyLedger>(&bytes) {
+                    out.push(v.clone());
+                    cache.days.insert(day, v);
+                    dirty = true;
+                }
+            }
+        }
+
+        if dirty {
+            let _ = write_month_cache(prefix, &cache);
+        }
+
         Ok(out)
     }
 }
@@ -272,6 +339,44 @@ fn write_usage_state(date: &str) -> SpResult<()> {
     let bytes = serde_json::to_vec(&st).map_err(|e| SpError {
         kind: ErrorKind::NotRetriable,
         message: format!("serialize usage state: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    fs::write(p, bytes).map_err(ioe)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct MonthCache {
+    // map day -> ledger
+    days: std::collections::BTreeMap<u32, DailyLedger>,
+}
+
+fn month_cache_path(prefix: &str) -> SpResult<PathBuf> {
+    Ok(app_dir()?.join(format!("usage_cache_{}.json", prefix)))
+}
+
+fn read_month_cache(prefix: &str) -> SpResult<MonthCache> {
+    let p = month_cache_path(prefix)?;
+    println!("read_month_cache: {}", p.display());
+    if !p.exists() {
+        return Ok(MonthCache::default());
+    }
+    let bytes = fs::read(p).map_err(ioe)?;
+    let st: MonthCache = serde_json::from_slice(&bytes).unwrap_or_default();
+    Ok(st)
+}
+
+fn write_month_cache(prefix: &str, cache: &MonthCache) -> SpResult<()> {
+    let p = month_cache_path(prefix)?;
+    println!("write_month_cache: {}", p.display());
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(ioe)?;
+    }
+    let bytes = serde_json::to_vec(cache).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("serialize month cache: {e}"),
         retry_after_ms: None,
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
