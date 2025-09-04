@@ -33,7 +33,12 @@ export default function UsagePage() {
   };
 
   useEffect(() => {
-    load();
+    // Auto merge today's deltas; backend will no-op if already merged today
+    (async () => {
+      const today = new Date().toISOString().slice(0, 10);
+      await nv.usage_merge_day(today);
+      await load();
+    })();
   }, [month]);
 
   const mergeToday = async () => {

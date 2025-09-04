@@ -1,6 +1,7 @@
 use crate::types::*;
 use crate::{r2_client, sp_backend::SpBackend};
 use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
@@ -62,6 +63,27 @@ impl UsageSync {
     }
 
     pub async fn merge_and_write_day(date: &str) -> SpResult<DailyLedger> {
+        // Fast-path: if already merged today, skip R2 ops entirely
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        if date == today {
+            if let Ok(st) = read_usage_state() {
+                if st.last_merge_date == date {
+                    // No-op result to reduce R2 operations; caller typically ignores return and reloads separately
+                    return Ok(DailyLedger {
+                        date: date.into(),
+                        class_a: Default::default(),
+                        class_b: Default::default(),
+                        ingress_bytes: 0,
+                        egress_bytes: 0,
+                        storage_bytes: 0,
+                        peak_storage_bytes: 0,
+                        deleted_storage_bytes: 0,
+                        rev: 0,
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                    });
+                }
+            }
+        }
         let p = local_delta_path(date)?;
         let local: UsageDelta = if p.exists() {
             serde_json::from_slice(&fs::read(&p).map_err(ioe)?).unwrap_or(UsageDelta {
@@ -167,6 +189,8 @@ impl UsageSync {
 
         // Clear local
         let _ = fs::remove_file(p);
+        // Persist state that we merged this date
+        let _ = write_usage_state(date);
         Ok(day)
     }
 
@@ -216,4 +240,42 @@ fn ioe(e: std::io::Error) -> SpError {
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct UsageState {
+    last_merge_date: String,
+}
+
+fn usage_state_path() -> SpResult<PathBuf> {
+    Ok(app_dir()?.join("usage_state.json"))
+}
+
+fn read_usage_state() -> SpResult<UsageState> {
+    let p = usage_state_path()?;
+    if !p.exists() {
+        return Ok(UsageState::default());
+    }
+    let bytes = fs::read(p).map_err(ioe)?;
+    let st: UsageState = serde_json::from_slice(&bytes).unwrap_or_default();
+    Ok(st)
+}
+
+fn write_usage_state(date: &str) -> SpResult<()> {
+    let p = usage_state_path()?;
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(ioe)?;
+    }
+    let st = UsageState {
+        last_merge_date: date.into(),
+    };
+    let bytes = serde_json::to_vec(&st).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("serialize usage state: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    fs::write(p, bytes).map_err(ioe)?;
+    Ok(())
 }
