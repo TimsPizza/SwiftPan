@@ -1,5 +1,6 @@
 import { TrafficTrendsChart } from "@/components/charts/TrafficTrendsChart";
 import { UsageTrendsChart } from "@/components/charts/UsageTrendsChart";
+import GlobalError from "@/components/fallback/GlobalError";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -66,6 +67,29 @@ export default function UsagePage() {
       (e) => setError(String((e as any)?.message || e)),
     );
   };
+
+  if (error) {
+    const msg = String(error || "");
+    const isUninit = /credentials|not.*found|uninitialized|backend|vault/i.test(
+      msg,
+    );
+    return (
+      <GlobalError
+        title={isUninit ? "SwiftPan is not initialized" : "Cannot load usage"}
+        description={
+          isUninit
+            ? "You need to configure your R2 credentials before viewing Usage."
+            : msg
+        }
+        primaryLabel={isUninit ? "Go to Settings" : undefined}
+        onPrimary={
+          isUninit ? () => (window.location.href = "/settings") : undefined
+        }
+        secondaryLabel={isUninit ? "Retry" : undefined}
+        onSecondary={isUninit ? () => window.location.reload() : undefined}
+      />
+    );
+  }
 
   return (
     <div className="space-y-3">

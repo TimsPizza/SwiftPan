@@ -3,13 +3,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            crate::logger::log_tail,
+            crate::logger::log_clear,
+            crate::logger::log_set_level,
             crate::bridge::backend_status,
             crate::bridge::backend_credentials_redacted,
             crate::bridge::backend_set_credentials,
             crate::bridge::vault_status,     // legacy shim
             crate::bridge::vault_set_manual, // legacy shim
-            crate::bridge::vault_unlock,     // legacy shim
-            crate::bridge::vault_lock,       // legacy shim
             crate::bridge::r2_sanity_check,
             crate::bridge::upload_new,
             crate::bridge::upload_ctrl,
@@ -30,13 +31,13 @@ pub fn run() {
             crate::bridge::delete_object,
         ])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Initialize tracing-based file logger with simple rotation (4MB cap)
+            crate::logger::init(app.handle().clone()).map_err(|e| {
+                Box::<dyn std::error::Error>::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("logger init failed: {}", e.message),
+                ))
+            })?;
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -47,6 +48,7 @@ pub fn run() {
 pub mod background;
 pub mod bridge;
 pub mod download;
+pub mod logger;
 pub mod r2_client;
 pub mod share;
 pub mod sp_backend;

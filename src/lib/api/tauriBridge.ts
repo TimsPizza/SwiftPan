@@ -173,4 +173,9 @@ export const nv = {
       };
       total_cost_usd: number;
     }>("usage_month_cost", { prefix }),
+  // Logs
+  log_tail: (lines?: number) => resultInvoke<string>("log_tail", { lines }),
+  log_clear: () => resultInvoke<void>("log_clear"),
+  log_set_level: (level: "trace" | "debug" | "info" | "warn" | "error") =>
+    resultInvoke<void>("log_set_level", { level }),
 };

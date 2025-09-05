@@ -1,3 +1,9 @@
+import FileItem from "@/components/features/FileItem";
+import {
+  FileDetailsPopOver,
+  FileItemPopOverMenu,
+  FileSharePopOver,
+} from "@/components/features/FilePopovers";
 import { Button } from "@/components/ui/Button";
 import {
   Card,
@@ -56,6 +62,7 @@ import {
   Image,
   MoreHorizontal,
   Music,
+  SlidersHorizontal,
   TrashIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -92,37 +99,20 @@ const getFileIcon = (filename: string) => {
   return <FileIcon className="h-4 w-4 text-gray-500" />;
 };
 
-const getFileTypeColor = (filename: string) => {
-  const ext = filename.split(".").pop()?.toLowerCase();
-
-  if (
-    ["jpg", "jpeg", "png", "gif", "webp", "arw", "cr2", "svg"].includes(
-      ext || "",
-    )
-  ) {
-    return "bg-blue-100 text-blue-800";
-  }
-  if (["mp4", "avi", "mov", "wmv"].includes(ext || "")) {
-    return "bg-purple-100 text-purple-800";
-  }
-  if (["mp3", "wav", "flac", "aac"].includes(ext || "")) {
-    return "bg-cyan-100 text-cyan-800";
-  }
-  if (
-    ["pdf", "doc", "docx", "txt", "md", "json", "xml", "yaml", "yml"].includes(
-      ext || "",
-    )
-  ) {
-    return "bg-green-100 text-green-800";
-  }
-
-  return "bg-gray-100 text-gray-800";
-};
-
 export const FileList = ({ files }: FileListProps) => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<File | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Mobile/Desktop popover state
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const [shareOpen, setShareOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [activeFile, setActiveFile] = useState<File | null>(null);
 
   // Search, sort, filter state
   const [search, setSearch] = useState("");
@@ -249,7 +239,6 @@ export const FileList = ({ files }: FileListProps) => {
     if (page > totalPages) setPage(totalPages);
   }, [totalPages]);
   const startIdx = (page - 1) * PAGE_SIZE;
-  const endIdx = Math.min(totalItems, startIdx + PAGE_SIZE);
   const pagedFiles = useMemo(
     () => processedFiles.slice(startIdx, startIdx + PAGE_SIZE),
     [processedFiles, startIdx],
@@ -346,6 +335,22 @@ export const FileList = ({ files }: FileListProps) => {
     }
   };
 
+  // Shared menu handlers
+  const openMenuAt = (point: { x: number; y: number }, file: File) => {
+    setActiveFile(file);
+    setMenuAnchor(point);
+    setMenuOpen(true);
+  };
+
+  const openShare = () => {
+    setMenuOpen(false);
+    setShareOpen(true);
+  };
+  const openDetails = () => {
+    setMenuOpen(false);
+    setDetailsOpen(true);
+  };
+
   if (!files || files.length === 0) {
     return (
       <Card>
@@ -381,67 +386,122 @@ export const FileList = ({ files }: FileListProps) => {
           </CardTitle>
           <CardDescription>Manage your uploaded files</CardDescription>
         </CardHeader>
-        <CardContent className="flex w-full flex-col gap-4">
-          {/* filter controls */}
-          <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-            <div className="flex items-center gap-2">
-              <Input
-                placeholder="Search files..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+        <CardContent className="flex w-full flex-col gap-2">
+          {/* Filters toggle */}
+          <div className="flex justify-start">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setFiltersOpen((v) => !v)}
+              aria-expanded={filtersOpen}
+              aria-controls="filelist-filters"
+            >
+              <SlidersHorizontal className="mr-2 h-4 w-4" />
+              Filters
+            </Button>
+          </div>
+
+          {/* Collapsible filter controls (all screens) */}
+          <div
+            id="filelist-filters"
+            className={`${filtersOpen ? "max-h-[640px] opacity-100" : "max-h-0 opacity-0"} overflow-hidden transition-[max-height,opacity] duration-200`}
+          >
+            <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="Search files..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Select
+                  value={typeFilter}
+                  onValueChange={(
+                    v: "all" | "image" | "video" | "audio" | "doc" | "other",
+                  ) => setTypeFilter(v)}
+                >
+                  <SelectTrigger className="w-full" size="sm">
+                    <SelectValue placeholder="Type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Types</SelectItem>
+                    <SelectItem value="image">Images</SelectItem>
+                    <SelectItem value="video">Videos</SelectItem>
+                    <SelectItem value="audio">Audio</SelectItem>
+                    <SelectItem value="doc">Documents</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={timeFilter}
+                  onValueChange={(v: "any" | "24h" | "7d" | "30d") =>
+                    setTimeFilter(v)
+                  }
+                >
+                  <SelectTrigger className="w-32" size="sm">
+                    <SelectValue placeholder="Uploaded" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="any">Any time</SelectItem>
+                    <SelectItem value="24h">Last 24h</SelectItem>
+                    <SelectItem value="7d">Last 7 days</SelectItem>
+                    <SelectItem value="30d">Last 30 days</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Min size (MB)"
+                  value={minSizeMB}
+                  onChange={(e) => setMinSizeMB(e.target.value)}
+                />
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Max size (MB)"
+                  value={maxSizeMB}
+                  onChange={(e) => setMaxSizeMB(e.target.value)}
+                />
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Select
-                value={typeFilter}
-                onValueChange={(
-                  v: "all" | "image" | "video" | "audio" | "doc" | "other",
-                ) => setTypeFilter(v)}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Types</SelectItem>
-                  <SelectItem value="image">Images</SelectItem>
-                  <SelectItem value="video">Videos</SelectItem>
-                  <SelectItem value="audio">Audio</SelectItem>
-                  <SelectItem value="doc">Documents</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={timeFilter}
-                onValueChange={(v: "any" | "24h" | "7d" | "30d") =>
-                  setTimeFilter(v)
-                }
-              >
-                <SelectTrigger className="w-32">
-                  <SelectValue placeholder="Uploaded" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="any">Any time</SelectItem>
-                  <SelectItem value="24h">Last 24h</SelectItem>
-                  <SelectItem value="7d">Last 7 days</SelectItem>
-                  <SelectItem value="30d">Last 30 days</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex items-center justify-end gap-2">
-              <Input
-                type="number"
-                inputMode="numeric"
-                placeholder="Min size (MB)"
-                value={minSizeMB}
-                onChange={(e) => setMinSizeMB(e.target.value)}
-              />
-              <Input
-                type="number"
-                inputMode="numeric"
-                placeholder="Max size (MB)"
-                value={maxSizeMB}
-                onChange={(e) => setMaxSizeMB(e.target.value)}
-              />
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground text-xs">Sort by</span>
+                <Select
+                  value={(sortBy ?? "uploadedAt") as any}
+                  onValueChange={(v: "name" | "size" | "uploadedAt" | "type") =>
+                    setSortBy(v)
+                  }
+                >
+                  <SelectTrigger className="w-full" size="sm">
+                    <SelectValue placeholder="Sort by" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="name">Name</SelectItem>
+                    <SelectItem value="size">Size</SelectItem>
+                    <SelectItem value="uploadedAt">Uploaded</SelectItem>
+                    <SelectItem value="type">Type</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground text-xs">Order</span>
+                <Select
+                  value={sortOrder}
+                  onValueChange={(v: "asc" | "desc") => setSortOrder(v)}
+                >
+                  <SelectTrigger className="w-full" size="sm">
+                    <SelectValue placeholder="Order" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="asc">Ascending</SelectItem>
+                    <SelectItem value="desc">Descending</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
 
@@ -615,6 +675,21 @@ export const FileList = ({ files }: FileListProps) => {
                         >
                           <DownloadIcon className="h-4 w-4" />
                         </Button>
+                        {/* Desktop three-dots opens shared menu */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label="More"
+                          title="More"
+                          onClick={(e) => {
+                            const p = { x: e.clientX, y: e.clientY };
+                            setActiveFile(file);
+                            setMenuAnchor(p);
+                            setMenuOpen(true);
+                          }}
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -661,59 +736,20 @@ export const FileList = ({ files }: FileListProps) => {
           {/* Mobile list */}
           <div className="space-y-2 md:!hidden">
             {pagedFiles.map((file) => (
-              <div key={file.id} className="rounded border p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    {getFileIcon(file.filename)}
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">
-                        {truncateFilename(file.filename, 36)}
-                      </div>
-                      <div className="text-muted-foreground truncate text-xs">
-                        {file.id}
-                      </div>
-                    </div>
-                  </div>
-                  <input
-                    type="checkbox"
-                    aria-label={`Select ${file.filename}`}
-                    className="size-4"
-                    checked={batch.selectedIds.has(file.id)}
-                    onChange={() => batch.toggleOne(file.id)}
-                  />
-                </div>
-                <div className="mt-2 flex items-center justify-between text-xs">
-                  <span>{formatBytes(file.size)}</span>
-                  <span className="text-muted-foreground">
-                    {formatRelativeTime(file.uploadedAt)}
-                  </span>
-                </div>
-                <div className="mt-2 flex items-center justify-end gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleDownload(file.id)}
-                  >
-                    <DownloadIcon className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleDeleteClick(file)}
-                  >
-                    <TrashIcon className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
+              <FileItem
+                key={file.id}
+                file={file}
+                onSelect={() => {}}
+                onDownload={() => handleDownload(file.id)}
+                onMoreClick={(p) => openMenuAt(p, file)}
+                onContextMenuOpen={(p) => openMenuAt(p, file)}
+                onLongPress={(p) => openMenuAt(p, file)}
+              />
             ))}
           </div>
 
           {/* Pagination Controls */}
-          <div className="mt-4 flex items-center justify-between">
-            <div className="text-muted-foreground text-sm">
-              Showing {totalItems === 0 ? 0 : startIdx + 1}–{endIdx} of{" "}
-              {totalItems}
-            </div>
+          <div className="mt-4 flex items-center justify-center">
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
@@ -767,6 +803,45 @@ export const FileList = ({ files }: FileListProps) => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Shared menu popover */}
+      <FileItemPopOverMenu
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        onOperation={(op) => {
+          if (!activeFile) return;
+          if (op === "download") {
+            void handleDownload(activeFile.id);
+          } else if (op === "share") {
+            openShare();
+          } else if (op === "details") {
+            openDetails();
+          } else if (op === "delete") {
+            handleDeleteClick(activeFile);
+          }
+        }}
+        anchorPoint={menuAnchor ?? undefined}
+      />
+
+      {/* Share popover */}
+      {activeFile && (
+        <FileSharePopOver
+          file={activeFile}
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+          centerOnMobile
+        />
+      )}
+
+      {/* Details popover */}
+      {activeFile && (
+        <FileDetailsPopOver
+          file={activeFile}
+          open={detailsOpen}
+          onOpenChange={setDetailsOpen}
+          centerOnMobile
+        />
+      )}
     </div>
   );
 };

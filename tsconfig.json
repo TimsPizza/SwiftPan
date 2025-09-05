@@ -33,6 +33,7 @@
     "src/components/TauriBrowser.tsx",
     "src/components/DevEventConsole.tsx",
     "src/components/ui/**/*.tsx",
+    "src/components/features/**/*.tsx",
     "src/styles/**/*.css",
     "src/lib/api/**/*.ts",
     "src/lib/utils/**/*.ts",

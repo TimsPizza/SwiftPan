@@ -6,7 +6,7 @@ import {
   FileIcon,
   GearIcon,
 } from "@radix-ui/react-icons";
-import { MoonIcon, SunIcon } from "lucide-react";
+import { CodeIcon, MoonIcon, SunIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { NavLink, useLocation } from "react-router-dom";
 
@@ -22,6 +22,7 @@ export const Sidebar = () => {
     { href: "/files", icon: FileIcon, label: "Files" },
     { href: "/usage", icon: BarChartIcon, label: "Usage" },
     { href: "/settings", icon: GearIcon, label: "Settings" },
+    { href: "/logs", icon: CodeIcon, label: "Logs" },
   ];
 
   return (

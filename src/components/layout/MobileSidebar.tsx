@@ -6,7 +6,7 @@ import {
   FileIcon,
   GearIcon,
 } from "@radix-ui/react-icons";
-import { MoonIcon, SunIcon } from "lucide-react";
+import { CodeIcon, MoonIcon, SunIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { NavLink, useLocation } from "react-router-dom";
 
@@ -22,10 +22,11 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
     { href: "/files", icon: FileIcon, label: "Files" },
     { href: "/usage", icon: BarChartIcon, label: "Usage" },
     { href: "/settings", icon: GearIcon, label: "Settings" },
+    { href: "/logs", icon: CodeIcon, label: "Logs" },
   ];
 
   return (
-    <div className="text-foreground bg-background flex h-full w-[240px] max-w-[320px] flex-col py-3 pr-3">
+    <div className="text-foreground bg-background flex h-full w-[224px] flex-col py-3 pr-3">
       <div className="mb-3 flex items-center gap-2 px-1">
         <DashboardIcon className="h-5 w-5" />
         <h2 className="text-base font-semibold tracking-tight">Menu</h2>

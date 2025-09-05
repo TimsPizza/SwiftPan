@@ -337,14 +337,8 @@ impl UsageSync {
 }
 
 fn app_dir() -> SpResult<PathBuf> {
-    let proj = ProjectDirs::from("com", "swiftpan", "SwiftPan").ok_or_else(|| SpError {
-        kind: ErrorKind::NotRetriable,
-        message: "project dirs not available".into(),
-        retry_after_ms: None,
-        context: None,
-        at: chrono::Utc::now().timestamp_millis(),
-    })?;
-    Ok(proj.data_dir().to_path_buf())
+    // Reuse sp_backend's robust directory resolution (ProjectDirs -> env var -> temp)
+    crate::sp_backend::vault_dir()
 }
 
 fn local_delta_path_for_today() -> SpResult<PathBuf> {

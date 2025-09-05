@@ -5,6 +5,7 @@ use chacha20poly1305::XChaCha20Poly1305;
 use directories::ProjectDirs;
 use once_cell::sync::Lazy;
 use rand::{rngs::OsRng, RngCore};
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -369,15 +370,16 @@ fn load_or_create_device_key() -> SpResult<[u8; 32]> {
     Ok(key)
 }
 
-fn vault_dir() -> SpResult<PathBuf> {
-    let proj = ProjectDirs::from("com", "swiftpan", "SwiftPan").ok_or_else(|| SpError {
-        kind: ErrorKind::NotRetriable,
-        message: "project dirs not available".into(),
-        retry_after_ms: None,
-        context: None,
-        at: chrono::Utc::now().timestamp_millis(),
-    })?;
-    Ok(proj.data_dir().to_path_buf())
+pub(crate) fn vault_dir() -> SpResult<PathBuf> {
+    if let Some(proj) = ProjectDirs::from("com", "swiftpan", "SwiftPan") {
+        return Ok(proj.data_dir().to_path_buf());
+    }
+    // Fallbacks for platforms where ProjectDirs is unavailable (e.g., Android emulator)
+    if let Ok(custom) = env::var("SWIFTPAN_DATA_DIR") {
+        return Ok(PathBuf::from(custom));
+    }
+    // Last resort: use temp dir within app sandbox; callers will create it lazily
+    Ok(env::temp_dir().join("swiftpan"))
 }
 
 #[derive(Default)]

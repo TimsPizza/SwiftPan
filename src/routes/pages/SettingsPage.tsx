@@ -207,9 +207,8 @@ export default function SettingsPage() {
         <Button type="submit" form="" onClick={save}>
           Save Bundle
         </Button>
-        {/* Unlock removed */}
         <Button variant="outline" onClick={sanity}>
-          R2 Sanity
+          Test Connection
         </Button>
       </div>
       {msg && <div className="text-sm text-green-700">{msg}</div>}

@@ -10,6 +10,15 @@ pub struct R2Client {
 }
 
 pub async fn build_client(cfg: &R2Config) -> SpResult<R2Client> {
+    crate::logger::debug(
+        "r2",
+        &format!(
+            "build_client endpoint={} bucket={} region={}",
+            cfg.endpoint,
+            cfg.bucket,
+            cfg.region.as_deref().unwrap_or("auto")
+        ),
+    );
     let region = cfg.region.clone().unwrap_or_else(|| "auto".to_string());
     let base = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(Region::new(region))
@@ -17,6 +26,7 @@ pub async fn build_client(cfg: &R2Config) -> SpResult<R2Client> {
         .await;
     let conf = s3::config::Builder::from(&base)
         .endpoint_url(cfg.endpoint.clone())
+        .force_path_style(true)
         .credentials_provider(Credentials::new(
             cfg.access_key_id.clone(),
             cfg.secret_access_key.clone(),
@@ -33,6 +43,7 @@ pub async fn build_client(cfg: &R2Config) -> SpResult<R2Client> {
 }
 
 pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> {
+    crate::logger::debug("r2", &format!("sanity_check start prefix={}", test_prefix));
     // List on prefix (should succeed, even if empty)
     let _ = client
         .s3
@@ -42,12 +53,15 @@ pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> 
         .max_keys(1)
         .send()
         .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("ListObjectsV2 failed: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        .map_err(|e| {
+            crate::logger::error("r2", &format!("ListObjectsV2 failed: {}", e));
+            SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("ListObjectsV2 failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
     // Usage: B 类 ListObjectsV2 +1
     let mut b = std::collections::HashMap::new();
@@ -75,13 +89,20 @@ pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> 
         .body(s3::primitives::ByteStream::from_static(b"ok"))
         .send()
         .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("PutObject failed: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        .map_err(|e| {
+            crate::logger::error("r2", &format!("PutObject failed: {}", e));
+            SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("PutObject failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
+    crate::logger::debug(
+        "r2",
+        &format!("sanity_check put_object ok key={}", temp_key),
+    );
     // Usage: A 类 PutObject +1，入口字节很小（2B），计一次 ingress_bytes
     let mut a = std::collections::HashMap::new();
     a.insert("PutObject".into(), 1u64);
@@ -101,13 +122,20 @@ pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> 
         .key(&temp_key)
         .send()
         .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("HeadObject failed: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        .map_err(|e| {
+            crate::logger::error("r2", &format!("HeadObject failed: {}", e));
+            SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("HeadObject failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
+    crate::logger::debug(
+        "r2",
+        &format!("sanity_check head_object ok key={}", temp_key),
+    );
     // Usage: B 类 HeadObject +1
     let mut b = std::collections::HashMap::new();
     b.insert("HeadObject".into(), 1u64);
@@ -127,13 +155,20 @@ pub async fn sanity_check(client: &R2Client, test_prefix: &str) -> SpResult<()> 
         .key(&temp_key)
         .send()
         .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("DeleteObject failed: {e}"),
-            retry_after_ms: Some(1000),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        .map_err(|e| {
+            crate::logger::error("r2", &format!("DeleteObject failed: {}", e));
+            SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("DeleteObject failed: {e}"),
+                retry_after_ms: Some(1000),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
+    crate::logger::debug(
+        "r2",
+        &format!("sanity_check delete_object ok key={}", temp_key),
+    );
     // Usage: A 类 DeleteObject +1；删除 2B
     let mut a = std::collections::HashMap::new();
     a.insert("DeleteObject".into(), 1u64);
@@ -196,12 +231,15 @@ pub async fn list_objects(
     if let Some(tok) = continuation.clone() {
         req = req.continuation_token(tok);
     }
-    let out = req.send().await.map_err(|e| SpError {
-        kind: ErrorKind::RetryableNet,
-        message: format!("ListObjectsV2: {e}"),
-        retry_after_ms: Some(500),
-        context: None,
-        at: chrono::Utc::now().timestamp_millis(),
+    let out = req.send().await.map_err(|e| {
+        crate::logger::error("r2", &format!("ListObjectsV2 error: {}", e));
+        SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("ListObjectsV2: {e}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        }
     })?;
     // Usage: B 类 ListObjectsV2 +1
     let mut b = std::collections::HashMap::new();
@@ -244,11 +282,21 @@ pub async fn list_objects(
         (false, true) => std::cmp::Ordering::Greater,
         _ => a.key.cmp(&b.key),
     });
-    Ok(crate::types::ListPage {
+    let page = crate::types::ListPage {
         prefix: prefix.to_string(),
         items,
         next_token: out.next_continuation_token().map(|s| s.to_string()),
-    })
+    };
+    crate::logger::info(
+        "r2",
+        &format!(
+            "list_objects ok prefix={} items={} next_token_present={}",
+            prefix,
+            page.items.len(),
+            page.next_token.is_some()
+        ),
+    );
+    Ok(page)
 }
 
 pub async fn list_all_objects_flat(
@@ -267,12 +315,15 @@ pub async fn list_all_objects_flat(
         if let Some(tok) = token.clone() {
             req = req.continuation_token(tok);
         }
-        let out = req.send().await.map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("ListObjectsV2: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        let out = req.send().await.map_err(|e| {
+            crate::logger::error("r2", &format!("ListObjectsV2 (flat) error: {}", e));
+            SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("ListObjectsV2: {e}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
         for o in out.contents() {
             let key = o.key().unwrap_or_default().to_string();
@@ -298,6 +349,10 @@ pub async fn list_all_objects_flat(
     }
     // Stable sort by key
     items.sort_by(|a, b| a.key.cmp(&b.key));
+    crate::logger::info(
+        "r2",
+        &format!("list_all_objects_flat ok total_items={}", items.len()),
+    );
     Ok(items)
 }
 
@@ -320,12 +375,15 @@ pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<()> {
         .key(key)
         .send()
         .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("DeleteObject: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        .map_err(|e| {
+            crate::logger::error("r2", &format!("DeleteObject error: {}", e));
+            SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("DeleteObject: {e}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
     // Usage: A 类 DeleteObject +1；无法获知对象大小，这里先只计操作，删除字节数需由上层传入或预先 HEAD
     let mut a = std::collections::HashMap::new();
@@ -349,12 +407,15 @@ pub async fn get_object_bytes(client: &R2Client, key: &str) -> SpResult<(Vec<u8>
         .key(key)
         .send()
         .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("GetObject: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        .map_err(|e| {
+            crate::logger::error("r2", &format!("GetObject error: {}", e));
+            SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("GetObject: {e}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
     // Usage: B 类 GetObject +1；egress 按返回大小
     let mut b = std::collections::HashMap::new();
@@ -364,12 +425,15 @@ pub async fn get_object_bytes(client: &R2Client, key: &str) -> SpResult<(Vec<u8>
         .body
         .collect()
         .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("read body: {e}"),
-            retry_after_ms: Some(300),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        .map_err(|e| {
+            crate::logger::error("r2", &format!("GetObject read body error: {}", e));
+            SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("read body: {e}"),
+                retry_after_ms: Some(300),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?
         .to_vec();
     let _ = UsageSync::record_local_delta(UsageDelta {
@@ -403,12 +467,15 @@ pub async fn put_object_bytes(
     if if_none_match {
         req = req.if_none_match("*");
     }
-    req.send().await.map_err(|e| SpError {
-        kind: ErrorKind::RetryableNet,
-        message: format!("PutObject: {e}"),
-        retry_after_ms: Some(500),
-        context: None,
-        at: chrono::Utc::now().timestamp_millis(),
+    req.send().await.map_err(|e| {
+        crate::logger::error("r2", &format!("PutObject error: {}", e));
+        SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("PutObject: {e}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        }
     })?;
     // Usage: A 类 PutObject +1；ingress 按写入大小
     let mut a = std::collections::HashMap::new();

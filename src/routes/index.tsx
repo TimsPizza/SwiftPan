@@ -1,6 +1,7 @@
 import { AppRoot } from "@/routes/_layout";
 import { Navigate, RouteObject } from "react-router-dom";
 import FilesPage from "./pages/FilesPage";
+import LogPage from "./pages/LogPage";
 import SettingsPage from "./pages/SettingsPage";
 import UsagePage from "./pages/UsagePage";
 
@@ -17,6 +18,7 @@ export const routes: RouteObject[] = [
       { path: "files", element: <FilesPage /> },
       { path: "usage", element: <UsagePage /> },
       { path: "settings", element: <SettingsPage /> },
+      { path: "logs", element: <LogPage /> },
     ],
   },
 ];

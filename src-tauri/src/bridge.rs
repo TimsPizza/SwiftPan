@@ -9,7 +9,12 @@ use tokio::io::AsyncWriteExt;
 // Backend status (replaces vault_status)
 #[tauri::command]
 pub async fn backend_status() -> SpResult<BackendStatus> {
-    SpBackend::status()
+    let r = SpBackend::status();
+    match &r {
+        Ok(_) => crate::logger::info("bridge", "backend_status ok"),
+        Err(e) => crate::logger::info("bridge", &format!("backend_status err: {}", e.message)),
+    }
+    r
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -61,6 +66,7 @@ fn redact_key(s: &str) -> String {
 
 #[tauri::command]
 pub async fn backend_credentials_redacted() -> SpResult<RedactedCredentials> {
+    crate::logger::debug("bridge", "backend_credentials_redacted");
     let b = SpBackend::get_decrypted_bundle_if_unlocked()?;
     Ok(RedactedCredentials {
         endpoint: redact_endpoint(&b.r2.endpoint),
@@ -77,7 +83,16 @@ pub async fn backend_set_credentials(
     bundle: CredentialBundle,
     master_password: String,
 ) -> SpResult<()> {
-    SpBackend::set_with_plaintext(bundle, &master_password)
+    crate::logger::info("bridge", "backend_set_credentials called");
+    let r = SpBackend::set_with_plaintext(bundle, &master_password);
+    match &r {
+        Ok(_) => crate::logger::info("bridge", "backend_set_credentials ok"),
+        Err(e) => crate::logger::info(
+            "bridge",
+            &format!("backend_set_credentials err: {}", e.message),
+        ),
+    }
+    r
 }
 
 // Legacy shims (no-ops / backwards compatibility)
@@ -89,25 +104,34 @@ pub async fn vault_status() -> SpResult<BackendStatus> {
 pub async fn vault_set_manual(bundle: CredentialBundle, master_password: String) -> SpResult<()> {
     backend_set_credentials(bundle, master_password).await
 }
-#[tauri::command]
-pub async fn vault_unlock(_master_password: String, _hold_ms: u64) -> SpResult<()> {
-    Ok(())
-}
-#[tauri::command]
-pub async fn vault_lock() -> SpResult<()> {
-    Ok(())
-}
 
 #[tauri::command]
 pub async fn r2_sanity_check() -> SpResult<()> {
+    crate::logger::debug("bridge", "r2_sanity_check");
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
-    r2_client::sanity_check(&client, "swiftpan-selftest/").await
+    let res = r2_client::sanity_check(&client, "swiftpan-selftest/").await;
+    if let Err(e) = &res {
+        crate::logger::error("bridge", &format!("r2_sanity_check error: {}", e.message));
+    }
+    res
 }
 
 #[tauri::command]
 pub async fn upload_new(app: tauri::AppHandle, params: NewUploadParams) -> SpResult<String> {
-    crate::upload::start_upload(app, params).await
+    crate::logger::info(
+        "bridge",
+        &format!(
+            "upload_new key={} part_size={}",
+            params.key, params.part_size
+        ),
+    );
+    let r = crate::upload::start_upload(app, params).await;
+    match &r {
+        Ok(id) => crate::logger::info("bridge", &format!("upload_new ok id={}", id)),
+        Err(e) => crate::logger::info("bridge", &format!("upload_new err: {}", e.message)),
+    }
+    r
 }
 // Implemented below
 
@@ -133,7 +157,19 @@ pub async fn upload_status(transfer_id: String) -> SpResult<UploadStatus> {
 
 #[tauri::command]
 pub async fn download_new(app: tauri::AppHandle, params: NewDownloadParams) -> SpResult<String> {
-    crate::download::start_download(app, params).await
+    crate::logger::info(
+        "bridge",
+        &format!(
+            "download_new key={} chunk={} dest=*redacted*",
+            params.key, params.chunk_size
+        ),
+    );
+    let r = crate::download::start_download(app, params).await;
+    match &r {
+        Ok(id) => crate::logger::info("bridge", &format!("download_new ok id={}", id)),
+        Err(e) => crate::logger::info("bridge", &format!("download_new err: {}", e.message)),
+    }
+    r
 }
 
 #[tauri::command]
@@ -142,12 +178,20 @@ pub async fn download_ctrl(
     transfer_id: String,
     action: String,
 ) -> SpResult<()> {
-    match action.as_str() {
+    crate::logger::info(
+        "bridge",
+        &format!("download_ctrl id={} action={}", transfer_id, action),
+    );
+    let r = match action.as_str() {
         "pause" => crate::download::pause(&app, &transfer_id),
         "resume" => crate::download::resume(&app, &transfer_id),
         "cancel" => crate::download::cancel(&app, &transfer_id),
         _ => Err(err_not_implemented("download_ctrl action")),
+    };
+    if let Err(e) = &r {
+        crate::logger::error("bridge", &format!("download_ctrl err: {}", e.message));
     }
+    r
 }
 
 #[tauri::command]
@@ -157,6 +201,15 @@ pub async fn download_status(transfer_id: String) -> SpResult<DownloadStatus> {
 
 #[tauri::command]
 pub async fn share_generate(params: ShareParams) -> SpResult<ShareLink> {
+    crate::logger::debug(
+        "bridge",
+        &format!(
+            "share_generate key={} ttl={} filename_present={}",
+            params.key,
+            params.ttl_secs,
+            params.download_filename.is_some()
+        ),
+    );
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     let (url, expires_at_ms) = r2_client::presign_get_url(
@@ -171,16 +224,23 @@ pub async fn share_generate(params: ShareParams) -> SpResult<ShareLink> {
 
 #[tauri::command]
 pub async fn usage_merge_day(date: String) -> SpResult<DailyLedger> {
-    crate::usage::UsageSync::merge_and_write_day(&date).await
+    crate::logger::info("bridge", &format!("usage_merge_day date={}", date));
+    let r = crate::usage::UsageSync::merge_and_write_day(&date).await;
+    if let Err(e) = &r {
+        crate::logger::error("bridge", &format!("usage_merge_day err: {}", e.message));
+    }
+    r
 }
 
 #[tauri::command]
 pub async fn usage_list_month(prefix: String) -> SpResult<Vec<DailyLedger>> {
+    crate::logger::info("bridge", &format!("usage_list_month prefix={}", prefix));
     crate::usage::UsageSync::list_month(&prefix).await
 }
 
 #[tauri::command]
 pub async fn usage_month_cost(prefix: String) -> SpResult<serde_json::Value> {
+    crate::logger::info("bridge", &format!("usage_month_cost prefix={}", prefix));
     crate::usage::UsageSync::month_cost(&prefix).await
 }
 
@@ -274,17 +334,41 @@ pub async fn list_objects(
     token: Option<String>,
     max_keys: Option<i32>,
 ) -> SpResult<crate::types::ListPage> {
+    crate::logger::debug(
+        "bridge",
+        &format!(
+            "list_objects prefix={:?} token_present={} max_keys={:?}",
+            prefix,
+            token.is_some(),
+            max_keys
+        ),
+    );
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     let p = prefix.unwrap_or_else(|| "".into());
-    r2_client::list_objects(&client, &p, token, max_keys.unwrap_or(1000)).await
+    let res = r2_client::list_objects(&client, &p, token, max_keys.unwrap_or(1000)).await;
+    if let Err(e) = &res {
+        crate::logger::error(
+            "bridge",
+            &format!("list_objects error: prefix={} err={}", p, e.message),
+        );
+    }
+    res
 }
 
 #[tauri::command]
 pub async fn list_all_objects(max_total: Option<i32>) -> SpResult<Vec<crate::types::FileEntry>> {
+    crate::logger::debug(
+        "bridge",
+        &format!("list_all_objects max_total={:?}", max_total),
+    );
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
-    r2_client::list_all_objects_flat(&client, max_total.unwrap_or(10_000)).await
+    let res = r2_client::list_all_objects_flat(&client, max_total.unwrap_or(10_000)).await;
+    if let Err(e) = &res {
+        crate::logger::error("bridge", &format!("list_all_objects error: {}", e.message));
+    }
+    res
 }
 
 #[tauri::command]
@@ -298,7 +382,15 @@ pub async fn delete_object(key: String) -> SpResult<()> {
             at: chrono::Utc::now().timestamp_millis(),
         });
     }
+    crate::logger::info("bridge", &format!("delete_object key={}", key));
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
-    r2_client::delete_object(&client, &key).await
+    let res = r2_client::delete_object(&client, &key).await;
+    if let Err(e) = &res {
+        crate::logger::error(
+            "bridge",
+            &format!("delete_object error: key={} err={}", key, e.message),
+        );
+    }
+    res
 }

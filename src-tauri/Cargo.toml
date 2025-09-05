@@ -1,8 +1,8 @@
 [package]
-name = "app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+name = "SwiftPan"
+version = "1.0.0"
+description = "Cloud drive using cloudflare R2"
+authors = ["timspizza"]
 license = ""
 repository = ""
 edition = "2021"
@@ -28,6 +28,8 @@ chrono = { version = "0.4", features = ["clock", "serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "1"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
 bytes = "1"
 futures = "0.3"
 rand = "0.8"
