@@ -194,7 +194,7 @@ export default function SettingsPage() {
               onClick={save}
               disabled={saveMutation.isLoading}
             >
-              {saveMutation.isLoading ? "Saving…" : "Save Bundle"}
+              {saveMutation.isLoading ? "Saving…" : "Save Credentials"}
             </Button>
             <Button
               variant="outline"

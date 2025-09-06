@@ -23,16 +23,13 @@ import {
 import { Separator } from "@/components/ui/separator";
 import type { FileItem as TFileItem } from "@/lib/api/schemas";
 import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
-import { save } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import { toast } from "sonner";
 
 export interface FileItemPopOverMenuProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  onOperation: (
-    operation: "download" | "share" | "details" | "delete" | "downloadPrompt",
-  ) => void;
+  onOperation: (operation: "download" | "share" | "details" | "delete") => void;
   trigger?: React.ReactNode;
   anchorPoint?: { x: number; y: number };
   contentClassName?: string;
@@ -86,7 +83,7 @@ export const FileItemPopOverMenu = ({
           className="flex w-full flex-col gap-1 text-sm"
         >
           <div className="hover:bg-accent w-full cursor-pointer rounded-md p-1">
-            <span onClick={() => onOperation("downloadPrompt")}>Download</span>{" "}
+            <span onClick={() => onOperation("download")}>Download</span>{" "}
           </div>
           <div className="hover:bg-accent w-full cursor-pointer rounded-md p-1">
             <span onClick={() => onOperation("share")}>Share</span>
@@ -103,54 +100,7 @@ export const FileItemPopOverMenu = ({
   );
 };
 
-export function FileDownloadDialog({
-  open,
-  onOpenChange,
-  onConfirm,
-  suggestedName,
-  defaultDir,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onConfirm: (destPath: string) => void;
-  suggestedName?: string;
-  defaultDir?: string | null;
-}) {
-  const chooseAndConfirm = async () => {
-    try {
-      const path = await save({
-        defaultPath: suggestedName
-          ? `${defaultDir ?? ""}/${suggestedName}`
-          : undefined,
-      });
-      if (path) {
-        onConfirm(String(path));
-      }
-    } catch (e) {
-      // swallow
-    }
-  };
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[min(90vw,26rem)]">
-        <DialogHeader>
-          <DialogTitle>Download</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <p className="text-muted-foreground text-sm">
-            Choose a destination file to save.
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button onClick={chooseAndConfirm}>Choose…</Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
+// FileDownloadDialog removed — use Tauri save dialog inline
 
 export const FileShareDialog = ({
   file,

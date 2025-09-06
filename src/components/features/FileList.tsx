@@ -1,7 +1,6 @@
 import FileItem, { DesktopFileItem } from "@/components/features/FileItem";
 import {
   FileDetailsDialog,
-  FileDownloadDialog,
   FileItemPopOverMenu,
   FileShareDialog,
 } from "@/components/features/FilePopovers";
@@ -46,9 +45,10 @@ import {
 } from "@/components/ui/table";
 import { useFileBatchAction } from "@/hooks/use-file-batch-action";
 import type { FileItem as File } from "@/lib/api/schemas";
-import { nv, queries } from "@/lib/api/tauriBridge";
+import { nv } from "@/lib/api/tauriBridge";
 import { cn } from "@/lib/utils";
 import { useTransferStore } from "@/store/transfer-store";
+import { useAppStore } from "@/store/app-store";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowUpDown,
@@ -67,20 +67,19 @@ interface FileListProps {
 // Desktop cell rendering is moved into DesktopFileItem within FileItem.tsx
 
 export const FileList = ({ files }: FileListProps) => {
-  const appSettingsQ = queries.useSettings();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<File | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Mobile/Desktop popover state
+  // context menu
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(
     null,
   );
   const [shareOpen, setShareOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [downloadPromptOpen, setDownloadPromptOpen] = useState(false);
   const [activeFile, setActiveFile] = useState<File | null>(null);
 
   // Search, sort, filter state
@@ -238,14 +237,29 @@ export const FileList = ({ files }: FileListProps) => {
   };
 
   // Prefer hook's downloadOne to avoid new tab navigation
-  const handleDownload = async (fileId: string) => {
-    const file = processedFiles.find((f) => f.id === fileId);
-    if (!file) {
-      toast.error("File not found");
-      return;
-    }
+  const handleDownload = async (dest_path: string) => {
+    if (!activeFile) return;
+    // dest_path is full file path; derive base directory
+    const sep = dest_path.includes("\\") ? "\\" : "/";
+    const idx = dest_path.lastIndexOf(sep);
+    const base = idx >= 0 ? dest_path.slice(0, idx) : dest_path;
+    try {
+      const { useAppStore } = await import("@/store/app-store");
+      const cur = useAppStore.getState().defaultDownloadDir;
+      if (!cur || cur.trim().length === 0) {
+        useAppStore.getState().setDefaultDownloadDir(base);
+        // Persist into app settings best-effort
+        const current = await nv.settings_get();
+        const app = await current.unwrapOr(null as any);
+        if (app) {
+          await (
+            await nv.settings_set({ ...app, defaultDownloadDir: base })
+          ).unwrapOr(undefined);
+        }
+      }
+    } catch {}
     toast.info(`Download started`);
-    await batch.downloadOne(file);
+    await batch.downloadOne(activeFile, base);
   };
 
   const handleDeleteClick = (file: File) => {
@@ -319,6 +333,19 @@ export const FileList = ({ files }: FileListProps) => {
   const openDetails = () => {
     setMenuOpen(false);
     setDetailsOpen(true);
+  };
+  const openDownload = async (file: File) => {
+    // Use native save dialog directly with suggested default
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { useAppStore } = await import("@/store/app-store");
+    const base = useAppStore.getState().defaultDownloadDir;
+    const defaultPath =
+      base && base.trim().length > 0
+        ? `${base.replace(/[\\/]$/, "")}/${file.filename}`
+        : undefined;
+    const picked = await save({ defaultPath });
+    if (!picked) return;
+    await handleDownload(String(picked));
   };
 
   if (!files || files.length === 0) {
@@ -489,7 +516,33 @@ export const FileList = ({ files }: FileListProps) => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={batch.batchDownload}
+                  onClick={async () => {
+                    const base = useAppStore.getState().defaultDownloadDir;
+                    const picked = await open({
+                      directory: true,
+                      multiple: false,
+                      defaultPath: base ?? undefined,
+                    });
+                    if (!picked) return;
+                    const chosen = String(picked);
+                    // Remember as default if missing
+                    if (!base || base.trim().length === 0) {
+                      useAppStore.getState().setDefaultDownloadDir(chosen);
+                      try {
+                        const s = await nv.settings_get();
+                        const app = await s.unwrapOr(null as any);
+                        if (app) {
+                          await (
+                            await nv.settings_set({
+                              ...app,
+                              defaultDownloadDir: chosen,
+                            })
+                          ).unwrapOr(undefined);
+                        }
+                      } catch {}
+                    }
+                    await batch.batchDownload(chosen);
+                  }}
                 >
                   Download selected
                 </Button>
@@ -603,7 +656,7 @@ export const FileList = ({ files }: FileListProps) => {
                     file={file}
                     selected={batch.selectedIds.has(file.id)}
                     onSelect={() => batch.toggleOne(file.id)}
-                    onDownload={() => handleDownload(file.id)}
+                    onDownload={() => openDownload(file)}
                     onMoreClick={(p) => openMenuAt(p, file)}
                     onDelete={() => handleDeleteClick(file)}
                   />
@@ -620,7 +673,7 @@ export const FileList = ({ files }: FileListProps) => {
                 file={file}
                 selected={batch.selectedIds.has(file.id)}
                 onSelect={() => batch.toggleOne(file.id)}
-                onDownload={() => handleDownload(file.id)}
+                onDownload={() => openDownload(file)}
                 onMoreClick={(p) => openMenuAt(p, file)}
                 onLongPress={(p) => openMenuAt(p, file)}
               />
@@ -690,10 +743,8 @@ export const FileList = ({ files }: FileListProps) => {
         onOperation={(op) => {
           if (!activeFile) return;
           if (op === "download") {
-            void handleDownload(activeFile.id);
-          } else if (op === "downloadPrompt") {
             setMenuOpen(false);
-            setDownloadPromptOpen(true);
+            openDownload(activeFile);
           } else if (op === "share") {
             openShare();
           } else if (op === "details") {
@@ -723,36 +774,7 @@ export const FileList = ({ files }: FileListProps) => {
         />
       )}
 
-      {/* Download dialog */}
-      {activeFile && (
-        <FileDownloadDialog
-          open={downloadPromptOpen}
-          onOpenChange={setDownloadPromptOpen}
-          suggestedName={activeFile.filename}
-          defaultDir={appSettingsQ.data?.defaultDownloadDir ?? null}
-          onConfirm={async (dest) => {
-            setDownloadPromptOpen(false);
-            const active = useTransferStore.getState().items;
-            const dup = Object.values(active).some(
-              (t) =>
-                t.type === "download" &&
-                t.key === activeFile.id &&
-                t.state !== "completed" &&
-                t.state !== "failed",
-            );
-            if (dup) return;
-            const r = await nv.download_new({
-              key: activeFile.id,
-              dest_path: dest,
-              chunk_size: 4 * 1024 * 1024,
-            });
-            r.match(
-              () => useTransferStore.getState().ui.setOpen(true),
-              () => {},
-            );
-          }}
-        />
-      )}
+      {/* Download dialog removed */}
     </div>
   );
 };

@@ -12,6 +12,7 @@ import {
 } from "@/lib/api/tauriBridge";
 import { useLogStore } from "@/store/log-store";
 import { useTransferStore } from "@/store/transfer-store";
+import { useAppStore } from "@/store/app-store";
 import { useEffect } from "react";
 
 type TransferKind = "upload" | "download";
@@ -283,6 +284,15 @@ async function ensureBridgeOnce() {
     if (st) useLogStore.getState().setStatus(st as any);
     const tail = await nv.log_tail(400).unwrapOr("");
     if (tail) useLogStore.getState().setAll(String(tail).split("\n"));
+  } catch {}
+
+  // Load app settings to seed default download directory
+  try {
+    const s = await nv.settings_get().unwrapOr(undefined as any);
+    const dir = s?.defaultDownloadDir as string | undefined;
+    if (dir && String(dir).trim().length > 0) {
+      useAppStore.getState().setDefaultDownloadDir(String(dir).trim());
+    }
   } catch {}
 
   // Poll active transfers periodically to stay in sync (idempotent)
