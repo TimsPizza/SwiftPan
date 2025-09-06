@@ -20,6 +20,7 @@ export const Sidebar = () => {
   };
   const navItems = [
     { href: "/files", icon: FileIcon, label: "Files" },
+    { href: "/transfers", icon: FileIcon, label: "Transfers" },
     { href: "/usage", icon: BarChartIcon, label: "Usage" },
     { href: "/settings", icon: GearIcon, label: "Settings" },
     { href: "/logs", icon: CodeIcon, label: "Logs" },

@@ -88,14 +88,18 @@ pub async fn build_client(cfg: &R2Config) -> SpResult<R2Client> {
     builder = builder.region(region.as_str());
     builder = builder.bucket(cfg.bucket.as_str());
     // Build reqwest client pinned to rustls + webpki roots for consistent TLS across desktop/mobile
+    // and wrap with our HTTP instrumentation for precise S3 Class A/B accounting.
     let req_builder = reqwest::Client::builder().use_rustls_tls();
-    let http_client = HttpClient::build(req_builder).map_err(|e| SpError {
+    let req_client = req_builder.build().map_err(|e| SpError {
         kind: ErrorKind::NotRetriable,
         message: format!("HttpClient build failed: {}", e),
         retry_after_ms: None,
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     })?;
+    // Wrap with our InstrumentedReqwest, then construct OpenDAL HttpClient from it.
+    let instr = crate::usage::http_instrument::InstrumentedReqwest::new(req_client);
+    let http_client = HttpClient::with(instr);
 
     // Build operator and inject custom HTTP client via layer
     let op = Operator::new(builder)
@@ -108,6 +112,7 @@ pub async fn build_client(cfg: &R2Config) -> SpResult<R2Client> {
         })?
         .layer(HttpClientLayer::new(http_client))
         .finish();
+    // Instrumentation is always-on; no toggle required.
     crate::logger::debug("r2", "build_client conf ok");
     crate::logger::info("r2", "build_client ok");
     let client = R2Client {
@@ -230,22 +235,13 @@ pub async fn list_objects(
     max_keys: i32,
 ) -> SpResult<crate::types::ListPage> {
     use crate::types::{FileEntry, ANALYTICS_PREFIX};
-    // Usage: B 类 ListObjectsV2 +1 (semantic equivalent)
-    let mut b = std::collections::HashMap::new();
-    b.insert("ListObjectsV2".into(), 1u64);
-    let _ = UsageSync::record_local_delta(UsageDelta {
-        class_a: Default::default(),
-        class_b: b,
-        ingress_bytes: 0,
-        egress_bytes: 0,
-        added_storage_bytes: 0,
-        deleted_storage_bytes: 0,
-    });
+    // Op counts handled at HTTP layer.
 
     // Emulate delimiter listing by grouping first-level prefixes
     use std::collections::BTreeSet;
     let mut dirs: BTreeSet<String> = BTreeSet::new();
-    let mut files: Vec<String> = vec![];
+    // store (key, meta) so we can surface size/etag/last_modified
+    let mut files: Vec<(String, opendal::Metadata)> = vec![];
     let l = client.op.list(prefix).await.map_err(|e| SpError {
         kind: ErrorKind::RetryableNet,
         message: format!("list: {}", e),
@@ -269,7 +265,8 @@ pub async fn list_objects(
             dirs.insert(dir);
             continue;
         }
-        files.push(key);
+        let meta = e.metadata().clone();
+        files.push((key, meta));
         count += 1;
     }
     let mut items: Vec<FileEntry> = vec![];
@@ -283,12 +280,15 @@ pub async fn list_objects(
             protected: k.starts_with(ANALYTICS_PREFIX),
         });
     }
-    for key in files.into_iter() {
+    for (key, meta) in files.into_iter() {
+        let size = meta.content_length();
+        let last_modified_ms = meta.last_modified().map(|dt| dt.timestamp_millis());
+        let etag = meta.etag().map(|s| s.to_string());
         items.push(FileEntry {
             key: key.clone(),
-            size: None,
-            last_modified_ms: None,
-            etag: None,
+            size: Some(size),
+            last_modified_ms,
+            etag,
             is_prefix: false,
             protected: key.starts_with(ANALYTICS_PREFIX),
         });
@@ -321,36 +321,46 @@ pub async fn list_all_objects_flat(
     max_total: i32,
 ) -> SpResult<Vec<crate::types::FileEntry>> {
     use crate::types::{FileEntry, ANALYTICS_PREFIX};
+    use futures::TryStreamExt;
     let mut items: Vec<FileEntry> = vec![];
-    // BFS using list() to traverse all prefixes
-    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    queue.push_back(String::new());
-    while let Some(prefix) = queue.pop_front() {
-        let l = client.op.list(&prefix).await.map_err(|e| SpError {
+    // Use OpenDAL recursive scan to traverse all entries under root.
+    // We still stop client-side when reaching max_total.
+    // Use lister_with().recursive(true) to stream all entries without manual BFS.
+    let mut lister = client
+        .op
+        .lister_with("")
+        .recursive(true)
+        .await
+        .map_err(|e| SpError {
             kind: ErrorKind::RetryableNet,
-            message: format!("list: {}", e),
+            message: format!("list recursive: {}", e),
             retry_after_ms: Some(500),
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
-        for e in l.into_iter() {
-            let key = e.path().to_string();
-            if key.ends_with('/') {
-                queue.push_back(key.clone());
-                continue;
-            }
-            items.push(FileEntry {
-                key: key.clone(),
-                size: None,
-                last_modified_ms: None,
-                etag: None,
-                is_prefix: false,
-                protected: key.starts_with(ANALYTICS_PREFIX),
-            });
-            if items.len() as i32 >= max_total {
-                break;
-            }
+    while let Some(entry_res) = lister.try_next().await.map_err(|e| SpError {
+        kind: ErrorKind::RetryableNet,
+        message: format!("list entry: {}", e),
+        retry_after_ms: Some(500),
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })? {
+        let key = entry_res.path().to_string();
+        if key.ends_with('/') {
+            continue;
         }
+        let meta = entry_res.metadata().clone();
+        let size = meta.content_length();
+        let last_modified_ms = meta.last_modified().map(|dt| dt.timestamp_millis());
+        let etag = meta.etag().map(|s| s.to_string());
+        items.push(FileEntry {
+            key: key.clone(),
+            size: Some(size),
+            last_modified_ms,
+            etag,
+            is_prefix: false,
+            protected: key.starts_with(ANALYTICS_PREFIX),
+        });
         if items.len() as i32 >= max_total {
             break;
         }
@@ -376,11 +386,9 @@ pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<()> {
             at: chrono::Utc::now().timestamp_millis(),
         }
     })?;
-    // Usage: A 类 DeleteObject +1；无法获知对象大小，这里先只计操作，删除字节数需由上层传入或预先 HEAD
-    let mut a = std::collections::HashMap::new();
-    a.insert("DeleteObject".into(), 1u64);
+    // Record deleted storage bytes locally; HTTP layer counts the operation itself.
     let _ = UsageSync::record_local_delta(UsageDelta {
-        class_a: a,
+        class_a: Default::default(),
         class_b: Default::default(),
         ingress_bytes: 0,
         egress_bytes: 0,
@@ -407,16 +415,7 @@ pub async fn get_object_bytes(client: &R2Client, key: &str) -> SpResult<(Vec<u8>
         .await
         .ok()
         .and_then(|m| m.etag().map(|s| s.to_string()));
-    let mut b = std::collections::HashMap::new();
-    b.insert("GetObject".into(), 1u64);
-    let _ = UsageSync::record_local_delta(UsageDelta {
-        class_a: Default::default(),
-        class_b: b,
-        ingress_bytes: 0,
-        egress_bytes: data.len() as u64,
-        added_storage_bytes: 0,
-        deleted_storage_bytes: 0,
-    });
+    // Op and egress bytes are tracked by HTTP layer.
     Ok((data.to_vec(), etag))
 }
 
@@ -439,17 +438,7 @@ pub async fn put_object_bytes(
             at: chrono::Utc::now().timestamp_millis(),
         }
     })?;
-    // Usage: A 类 PutObject +1；ingress 按写入大小
-    let mut a = std::collections::HashMap::new();
-    a.insert("PutObject".into(), 1u64);
-    let _ = UsageSync::record_local_delta(UsageDelta {
-        class_a: a,
-        class_b: Default::default(),
-        ingress_bytes: write_len,
-        egress_bytes: 0,
-        added_storage_bytes: write_len,
-        deleted_storage_bytes: 0,
-    });
+    // Op and ingress bytes tracked by HTTP layer.
     Ok(())
 }
 

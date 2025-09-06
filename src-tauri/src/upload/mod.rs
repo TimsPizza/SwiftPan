@@ -1,3 +1,4 @@
+use crate::settings;
 use crate::types::*;
 use crate::usage::UsageSync;
 use crate::{r2_client, sp_backend::SpBackend};
@@ -146,6 +147,29 @@ async fn run_upload(
     paused: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
 ) -> SpResult<()> {
+    let src_basename = std::path::Path::new(&params.source_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let maybe_thumb_local: Option<String> = {
+        let s = settings::get();
+        if !s.upload_thumbnail {
+            None
+        } else {
+            let parent = std::path::Path::new(&params.source_path).parent();
+            if let Some(dir) = parent {
+                let thumb_name = format!("thumbnail_{}.jpg", src_basename);
+                let p = dir.join(thumb_name);
+                match tokio::fs::metadata(&p).await {
+                    Ok(m) if m.is_file() => Some(p.to_string_lossy().to_string()),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+    };
     emit_upload(
         app,
         &UploadEvent::Started {
@@ -246,17 +270,7 @@ async fn run_upload(
                 etag: String::new(),
             },
         );
-        // Usage: B 类 UploadPart +1；按分片大小计 ingress
-        let mut b = std::collections::HashMap::new();
-        b.insert("UploadPart".into(), 1u64);
-        let _ = UsageSync::record_local_delta(UsageDelta {
-            class_a: Default::default(),
-            class_b: b,
-            ingress_bytes: n as u64,
-            egress_bytes: 0,
-            added_storage_bytes: n as u64,
-            deleted_storage_bytes: 0,
-        });
+        // Op and ingress/storage bytes tracked by HTTP layer.
         part_number += 1;
     }
 
@@ -293,17 +307,32 @@ async fn run_upload(
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     })?;
-    // Usage: A 类 CompleteMultipartUpload +1 (semantic)
-    let mut a = std::collections::HashMap::new();
-    a.insert("CompleteMultipartUpload".into(), 1u64);
-    let _ = UsageSync::record_local_delta(UsageDelta {
-        class_a: a,
-        class_b: Default::default(),
-        ingress_bytes: 0,
-        egress_bytes: 0,
-        added_storage_bytes: 0,
-        deleted_storage_bytes: 0,
-    });
+
+    // Optionally upload local thumbnail file in background (best-effort)
+    if let Some(local_thumb) = maybe_thumb_local.clone() {
+        let client2 = client.clone();
+        let thumb_key = format!("thumbnail_{}.jpg", params.key);
+        tokio::spawn(async move {
+            if let Ok(mut f) = tokio::fs::File::open(&local_thumb).await {
+                let mut writer = match client2.op.writer(&thumb_key).await {
+                    Ok(w) => w,
+                    Err(_) => return,
+                };
+                let mut buf = vec![0u8; 512 * 1024];
+                loop {
+                    match f.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let _ = writer.write(buf[..n].to_vec()).await;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = writer.close().await;
+            }
+        });
+    }
+    // Op tracked by HTTP layer.
     emit_upload(
         app,
         &UploadEvent::Completed {

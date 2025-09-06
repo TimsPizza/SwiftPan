@@ -18,7 +18,9 @@ import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
 export interface FileItemPopOverMenuProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  onOperation: (operation: "download" | "share" | "details" | "delete") => void;
+  onOperation: (
+    operation: "download" | "share" | "details" | "delete" | "downloadPrompt",
+  ) => void;
   trigger?: React.ReactNode;
   anchorPoint?: { x: number; y: number };
   contentClassName?: string;
@@ -64,8 +66,13 @@ export const FileItemPopOverMenu = ({
       )}
       <PopoverContent
         align="start"
-        side="right"
-        sideOffset={8}
+        side="bottom"
+        sideOffset={0}
+        style={
+          anchorPoint
+            ? { position: "fixed", left: anchorPoint.x, top: anchorPoint.y }
+            : undefined
+        }
         className={contentClassName}
       >
         <div
@@ -73,6 +80,9 @@ export const FileItemPopOverMenu = ({
           className="flex h-36 w-14 flex-col gap-2"
         >
           <span onClick={() => onOperation("download")}>Download</span>
+          <span onClick={() => onOperation("downloadPrompt")}>
+            Download to...
+          </span>
           <span onClick={() => onOperation("share")}>Share</span>
           <span onClick={() => onOperation("details")}>Details</span>
           <span onClick={() => onOperation("delete")}>Delete</span>
@@ -81,6 +91,57 @@ export const FileItemPopOverMenu = ({
     </Popover>
   );
 };
+
+export function FileDownloadPromptPopover({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (destPath: string) => void;
+}) {
+  const [dest, setDest] = (globalThis as any).React?.useState("") ?? [
+    "",
+    () => {},
+  ];
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverAnchor />
+      <PopoverContent
+        align="center"
+        sideOffset={0}
+        className="w-[min(90vw,22rem)]"
+      >
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-medium">Download to</div>
+          <input
+            className="border-input bg-background text-foreground placeholder:text-muted-foreground ring-offset-background focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            placeholder="/path/to/save"
+            value={dest}
+            onChange={(e) => setDest((e as any).target.value)}
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              className="rounded px-2 py-1 text-xs"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="bg-primary text-primary-foreground hover:bg-primary/90 rounded px-2 py-1 text-xs"
+              onClick={() => {
+                if (dest) onConfirm(dest);
+              }}
+            >
+              Start
+            </button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export const FileSharePopOver = ({
   file,

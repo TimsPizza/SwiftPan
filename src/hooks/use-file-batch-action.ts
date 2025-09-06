@@ -1,5 +1,5 @@
 import type { FileItem as File } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
+import { nv, queries } from "@/lib/api/tauriBridge";
 import { useTransferStore } from "@/store/transfer-store";
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -22,6 +22,7 @@ export const useFileBatchAction = (
   files: File[] | undefined,
   visibleFiles: File[] | undefined,
 ): UseFileBatchActionReturn => {
+  const settingsQ = queries.useSettings();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // map for quick id -> file lookup
@@ -92,7 +93,9 @@ export const useFileBatchAction = (
 
     for (const f of targets) {
       try {
-        const base = await downloadDir();
+        const base =
+          (settingsQ.data?.defaultDownloadDir as string | undefined) ||
+          (await downloadDir());
         const dest = await join(base, f.filename || "download");
         // prevent duplicate active downloads for same key
         const active = useTransferStore.getState().items;
@@ -126,41 +129,46 @@ export const useFileBatchAction = (
         toast.error(`Failed to download ${f.filename}`);
       }
     }
-  }, [selectedIds, idToFile]);
+  }, [selectedIds, idToFile, settingsQ.data]);
 
-  const downloadOne = useCallback(async (file: File) => {
-    try {
-      const base = await downloadDir();
-      const dest = await join(base, file.filename || "download");
-      const active = useTransferStore.getState().items;
-      const dup = Object.values(active).some(
-        (t) =>
-          t.type === "download" &&
-          t.key === file.id &&
-          t.state !== "completed" &&
-          t.state !== "failed",
-      );
-      if (dup) {
-        toast.info(`Already downloading: ${file.filename}`);
-        return;
+  const downloadOne = useCallback(
+    async (file: File) => {
+      try {
+        const base =
+          (settingsQ.data?.defaultDownloadDir as string | undefined) ||
+          (await downloadDir());
+        const dest = await join(base, file.filename || "download");
+        const active = useTransferStore.getState().items;
+        const dup = Object.values(active).some(
+          (t) =>
+            t.type === "download" &&
+            t.key === file.id &&
+            t.state !== "completed" &&
+            t.state !== "failed",
+        );
+        if (dup) {
+          toast.info(`Already downloading: ${file.filename}`);
+          return;
+        }
+        const r = await nv.download_new({
+          key: file.id,
+          dest_path: dest,
+          chunk_size: 4 * 1024 * 1024,
+        });
+        r.match(
+          () => {
+            useTransferStore.getState().ui.setOpen(true);
+          },
+          (e) => {
+            throw new Error(String((e as any)?.message || e));
+          },
+        );
+      } catch (e) {
+        toast.error(`Failed to download ${file.filename}`);
       }
-      const r = await nv.download_new({
-        key: file.id,
-        dest_path: dest,
-        chunk_size: 4 * 1024 * 1024,
-      });
-      r.match(
-        () => {
-          useTransferStore.getState().ui.setOpen(true);
-        },
-        (e) => {
-          throw new Error(String((e as any)?.message || e));
-        },
-      );
-    } catch (e) {
-      toast.error(`Failed to download ${file.filename}`);
-    }
-  }, []);
+    },
+    [settingsQ.data],
+  );
 
   const deleteSelected = useCallback(async () => {
     if (selectedIds.size === 0) return { success: 0, failed: 0 };

@@ -28,10 +28,18 @@ export default function UsagePage() {
   const usageQ = queries.useUsageListMonth(month, {
     onSuccess: (ok) => setItems(ok as any[]),
     onError: (e: any) => setError(String(e?.message || e)),
+    staleTime: 300_000,
+    cacheTime: 600_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
   const costQ = queries.useUsageMonthCost(month, {
     onSuccess: (ok) => setCost(ok),
     onError: (e: any) => setError(String(e?.message || e)),
+    staleTime: 300_000,
+    cacheTime: 600_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   useEffect(() => {
@@ -102,11 +110,14 @@ export default function UsagePage() {
               {mergeMutation.isLoading ? "Merging…" : "Merge Today"}
             </Button>
             {(usageQ.isLoading || costQ.isLoading) && (
-              <span className="text-sm">Loading…</span>
+              <div className="flex items-center gap-2">
+                <div className="bg-muted h-4 w-32 animate-pulse rounded" />
+                <div className="bg-muted h-4 w-24 animate-pulse rounded" />
+              </div>
             )}
             {error && <span className="text-sm text-red-600">{error}</span>}
           </div>
-          {cost && (
+          {cost ? (
             <div className="grid grid-cols-1 gap-4">
               {/* Storage */}
               <div>
@@ -173,6 +184,12 @@ export default function UsagePage() {
                 </div>
               </div>
             </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4">
+              <div className="bg-muted h-20 w-full animate-pulse rounded" />
+              <div className="bg-muted h-20 w-full animate-pulse rounded" />
+              <div className="bg-muted h-20 w-full animate-pulse rounded" />
+            </div>
           )}
         </CardContent>
       </Card>
@@ -183,9 +200,13 @@ export default function UsagePage() {
           <CardTitle>Usage</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-64 w-full">
-            <UsageTrendsChart points={items} />
-          </div>
+          {usageQ.isLoading ? (
+            <div className="bg-muted h-64 w-full animate-pulse rounded" />
+          ) : (
+            <div className="h-64 w-full">
+              <UsageTrendsChart points={items} />
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -195,9 +216,13 @@ export default function UsagePage() {
           <CardTitle>Traffic</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-64 w-full">
-            <TrafficTrendsChart points={trafficPoints as any} />
-          </div>
+          {usageQ.isLoading ? (
+            <div className="bg-muted h-64 w-full animate-pulse rounded" />
+          ) : (
+            <div className="h-64 w-full">
+              <TrafficTrendsChart points={trafficPoints as any} />
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

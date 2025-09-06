@@ -13,6 +13,8 @@ dependencies = [
  "chrono",
  "directories",
  "futures",
+ "http",
+ "http-body",
  "log",
  "once_cell",
  "opendal",

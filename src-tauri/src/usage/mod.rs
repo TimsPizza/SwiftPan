@@ -1,4 +1,5 @@
 use crate::types::*;
+pub mod http_instrument;
 use crate::{r2_client, sp_backend::SpBackend};
 use chrono::Datelike;
 // use directories::ProjectDirs;

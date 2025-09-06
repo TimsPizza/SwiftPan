@@ -56,7 +56,10 @@ const Button = React.forwardRef<
     <Comp
       ref={ref}
       data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
+      className={cn(
+        buttonVariants({ variant, size, className }),
+        "active:scale-95 active:opacity-90",
+      )}
       {...props}
     />
   );

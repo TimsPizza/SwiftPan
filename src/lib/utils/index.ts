@@ -13,7 +13,7 @@ export function cn(...inputs: ClassValue[]) {
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes)) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"]; 
+  const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   let num = bytes;
   while (num >= 1024 && i < units.length - 1) {

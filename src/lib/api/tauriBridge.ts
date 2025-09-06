@@ -75,9 +75,35 @@ function resultInvoke<T = unknown>(
 }
 
 export const nv = {
+  settings_get: () =>
+    resultInvoke<{
+      logLevel: string;
+      maxConcurrency: number;
+      defaultDownloadDir?: string | null;
+      uploadThumbnail: boolean;
+    }>("settings_get"),
+  settings_set: (settings: {
+    logLevel: string;
+    maxConcurrency: number;
+    defaultDownloadDir?: string | null;
+    uploadThumbnail: boolean;
+  }) =>
+    resultInvoke<void>("settings_set", {
+      settings,
+    }),
   backend_set_credentials: (bundle: unknown) =>
     resultInvoke<void>("backend_set_credentials", {
       bundle,
+    }),
+  backend_patch_credentials: (patch: Partial<{
+    endpoint: string;
+    access_key_id: string;
+    secret_access_key: string;
+    bucket: string;
+    region?: string;
+  }>) =>
+    resultInvoke<void>("backend_patch_credentials", {
+      patch,
     }),
   backend_status: () => resultInvoke("backend_status"),
   backend_credentials_redacted: () =>
@@ -196,6 +222,13 @@ export const nv = {
 
 // React Query wrappers (minimal, non-breaking)
 export const queries = {
+  useSettings: (opts?: UseQueryOptions<any>) =>
+    useQuery({
+      queryKey: ["app_settings"],
+      queryFn: async () => (await nv.settings_get()).unwrapOr(null),
+      staleTime: 30_000,
+      ...opts,
+    }),
   useListAllObjects: (
     maxTotal = 10000,
     opts?: UseQueryOptions<any, unknown, any, any>,
@@ -203,6 +236,10 @@ export const queries = {
     useQuery({
       queryKey: ["list_all_objects", maxTotal],
       queryFn: async () => (await nv.list_all_objects(maxTotal)).unwrapOr([]),
+      staleTime: 300_000,
+      cacheTime: 600_000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
       ...opts,
     }),
   useBackendStatus: (opts?: UseQueryOptions<any>) =>
@@ -244,7 +281,14 @@ export const mutations = {
   useSaveCredentials: (opts?: UseMutationOptions<void, unknown, any>) =>
     useMutation({
       mutationFn: async (bundle: any) => {
-        await await nv.backend_set_credentials(bundle).unwrapOr(undefined);
+        // For compatibility, accept either full bundle { r2: {...} } or direct patch shape
+        if (bundle && bundle.r2) {
+          await await nv.backend_set_credentials(bundle).unwrapOr(undefined);
+        } else {
+          await await nv
+            .backend_patch_credentials(bundle)
+            .unwrapOr(undefined);
+        }
       },
       ...opts,
     }),

@@ -1,6 +1,7 @@
 import FileItem from "@/components/features/FileItem";
 import {
   FileDetailsPopOver,
+  FileDownloadPromptPopover,
   FileItemPopOverMenu,
   FileSharePopOver,
 } from "@/components/features/FilePopovers";
@@ -112,6 +113,7 @@ export const FileList = ({ files }: FileListProps) => {
   );
   const [shareOpen, setShareOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [downloadPromptOpen, setDownloadPromptOpen] = useState(false);
   const [activeFile, setActiveFile] = useState<File | null>(null);
 
   // Search, sort, filter state
@@ -642,7 +644,15 @@ export const FileList = ({ files }: FileListProps) => {
                     </TableCell>
                     <TableCell className="min-w-0 whitespace-normal!">
                       <div className="flex min-w-0 items-center gap-3">
-                        {getFileIcon(file.filename)}
+                        {file.thumbnailKey ? (
+                          <img
+                            src={`data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='16' height='16' fill='%23d1d5db'/%3E%3C/svg%3E`}
+                            alt="thumb"
+                            className="h-4 w-4 rounded-sm"
+                          />
+                        ) : (
+                          getFileIcon(file.filename)
+                        )}
                         <div className="flex min-w-0 flex-col">
                           <p className="line-clamp-1 text-sm font-medium break-all">
                             {truncateFilename(file.filename, 40)}
@@ -739,7 +749,8 @@ export const FileList = ({ files }: FileListProps) => {
               <FileItem
                 key={file.id}
                 file={file}
-                onSelect={() => {}}
+                selected={batch.selectedIds.has(file.id)}
+                onSelect={() => batch.toggleOne(file.id)}
                 onDownload={() => handleDownload(file.id)}
                 onMoreClick={(p) => openMenuAt(p, file)}
                 onContextMenuOpen={(p) => openMenuAt(p, file)}
@@ -812,6 +823,9 @@ export const FileList = ({ files }: FileListProps) => {
           if (!activeFile) return;
           if (op === "download") {
             void handleDownload(activeFile.id);
+          } else if (op === "downloadPrompt") {
+            setMenuOpen(false);
+            setDownloadPromptOpen(true);
           } else if (op === "share") {
             openShare();
           } else if (op === "details") {
@@ -840,6 +854,35 @@ export const FileList = ({ files }: FileListProps) => {
           open={detailsOpen}
           onOpenChange={setDetailsOpen}
           centerOnMobile
+        />
+      )}
+
+      {/* Download prompt popover */}
+      {activeFile && (
+        <FileDownloadPromptPopover
+          open={downloadPromptOpen}
+          onOpenChange={setDownloadPromptOpen}
+          onConfirm={async (dest) => {
+            setDownloadPromptOpen(false);
+            const active = useTransferStore.getState().items;
+            const dup = Object.values(active).some(
+              (t) =>
+                t.type === "download" &&
+                t.key === activeFile.id &&
+                t.state !== "completed" &&
+                t.state !== "failed",
+            );
+            if (dup) return;
+            const r = await nv.download_new({
+              key: activeFile.id,
+              dest_path: dest,
+              chunk_size: 4 * 1024 * 1024,
+            });
+            r.match(
+              () => useTransferStore.getState().ui.setOpen(true),
+              () => {},
+            );
+          }}
         />
       )}
     </div>

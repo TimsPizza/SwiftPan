@@ -15,6 +15,15 @@ pub struct CredentialBundle {
     pub r2: R2Config,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct R2ConfigPatch {
+    pub endpoint: Option<String>,
+    pub access_key_id: Option<String>,
+    pub secret_access_key: Option<String>,
+    pub bucket: Option<String>,
+    pub region: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BackendState {
     // For compatibility, keep names but semantics:
@@ -137,6 +146,19 @@ impl SpBackend {
         Ok(())
     }
 
+    pub fn patch_r2_config(patch: R2ConfigPatch) -> SpResult<()> {
+        // Load current bundle (from mem or disk)
+        let mut cur = Self::get_decrypted_bundle_if_unlocked()?;
+        // Apply provided fields
+        if let Some(v) = patch.endpoint { cur.r2.endpoint = v; }
+        if let Some(v) = patch.access_key_id { cur.r2.access_key_id = v; }
+        if let Some(v) = patch.secret_access_key { cur.r2.secret_access_key = v; }
+        if let Some(v) = patch.bucket { cur.r2.bucket = v; }
+        if let Some(v) = patch.region { cur.r2.region = Some(v); }
+        // Persist via existing set logic
+        Self::set_with_plaintext(cur)
+    }
+
     pub fn test_connectivity(_master_password: &str) -> SpResult<()> {
         // Will be implemented after R2 wiring; placeholder
         Err(err_not_implemented("backend.test_connectivity"))
@@ -247,7 +269,7 @@ impl SpBackend {
             }
         })?;
         if let Some(b) = &st.creds {
-            crate::logger::info(
+            crate::logger::debug(
                 "sp_backend",
                 "get_decrypted_bundle_if_unlocked returning bundle",
             );
@@ -255,7 +277,7 @@ impl SpBackend {
         }
         drop(st);
         // Attempt lazy load from disk using device key
-        crate::logger::info(
+        crate::logger::debug(
             "sp_backend",
             "get_decrypted_bundle_if_unlocked attempting lazy load from disk",
         );

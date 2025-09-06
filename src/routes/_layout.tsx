@@ -1,7 +1,7 @@
 import EventBridge from "@/components/EventBridge";
 import MobileSidebar from "@/components/layout/MobileSidebar";
 import { Sidebar } from "@/components/layout/Sidebar";
-import TransferManager from "@/components/TransferManager";
+// import TransferManager from "@/components/TransferManager";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { MenuIcon } from "lucide-react";
 import { ThemeProvider } from "next-themes";
@@ -30,7 +30,7 @@ export function AppRoot() {
                 <button
                   aria-label="Open sidebar"
                   className="hover:bg-muted rounded p-2"
-                  onClick={() => setMobileOpen(true)}
+                  onPointerDown={() => setMobileOpen(true)}
                 >
                   <MenuIcon />
                 </button>
@@ -52,7 +52,7 @@ export function AppRoot() {
           </Drawer>
           {/* Event Listeners */}
           <EventBridge />
-          <TransferManager />
+          {/* <TransferManager /> */}
           {/* Sonner Toast Container */}
           <Toaster richColors position="top-center" />
         </ThemeProvider>

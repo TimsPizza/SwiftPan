@@ -1,10 +1,26 @@
 import { Button } from "@/components/ui/Button";
-import { SettingsSchema, type SettingsFormValues } from "@/lib/api/schemas";
-import { mutations, queries } from "@/lib/api/tauriBridge";
+import {
+  SettingsPatchSchema,
+  type SettingsFormValues,
+} from "@/lib/api/schemas";
+import { mutations, nv, queries } from "@/lib/api/tauriBridge";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 
 export default function SettingsPage() {
+  const appSettingsQ = queries.useSettings();
+  const [logLevel, setLogLevel] = useState<string>(
+    appSettingsQ.data?.logLevel || "info",
+  );
+  const [maxConcurrency, setMaxConcurrency] = useState<number>(
+    appSettingsQ.data?.maxConcurrency || 2,
+  );
+  const [defaultDownloadDir, setDefaultDownloadDir] = useState<string>(
+    appSettingsQ.data?.defaultDownloadDir || "",
+  );
+  const [uploadThumbnail, setUploadThumbnail] = useState<boolean>(
+    appSettingsQ.data?.uploadThumbnail ?? false,
+  );
   const {
     register,
     handleSubmit,
@@ -41,7 +57,23 @@ export default function SettingsPage() {
   const save = handleSubmit(async (values) => {
     setMsg({ msg: "", isError: false });
     // Validate with zod
-    const parsed = SettingsSchema.safeParse(values);
+    // Build a partial patch from non-empty fields
+    const patch: Partial<SettingsFormValues> = {};
+    if (values.endpoint && values.endpoint.trim().length > 0)
+      patch.endpoint = values.endpoint.trim();
+    if (values.access_key_id && values.access_key_id.trim().length > 0)
+      patch.access_key_id = values.access_key_id.trim();
+    if (
+      values.secret_access_key &&
+      values.secret_access_key.trim().length > 0
+    )
+      patch.secret_access_key = values.secret_access_key.trim();
+    if (values.bucket && values.bucket.trim().length > 0)
+      patch.bucket = values.bucket.trim();
+    if (values.region && values.region.trim().length > 0)
+      patch.region = values.region.trim();
+
+    const parsed = SettingsPatchSchema.safeParse(patch);
     if (!parsed.success) {
       parsed.error.issues.forEach((iss) => {
         const path = (iss.path?.join(".") || "") as keyof SettingsFormValues;
@@ -49,17 +81,7 @@ export default function SettingsPage() {
       });
       return;
     }
-    const v = parsed.data;
-    const bundle = {
-      r2: {
-        endpoint: v.endpoint,
-        access_key_id: v.access_key_id,
-        secret_access_key: v.secret_access_key,
-        bucket: v.bucket,
-        region: v.region,
-      },
-    };
-    await saveMutation.mutateAsync(bundle);
+    await saveMutation.mutateAsync(parsed.data);
     await Promise.all([statusQ.refetch(), credsQ.refetch()]);
     setMsg({ msg: "Saved", isError: false });
   });
@@ -160,6 +182,75 @@ export default function SettingsPage() {
 
         {/* Device ID and Master Password removed */}
       </form>
+      <div className="mt-4 grid max-w-xl grid-cols-2 gap-2">
+        <label className="text-sm">Log level</label>
+        <select
+          className="w-full rounded border px-2 py-1"
+          value={logLevel}
+          onChange={(e) => {
+            setLogLevel(e.target.value);
+            void nv.log_set_level(e.target.value as any);
+          }}
+        >
+          <option value="trace">trace</option>
+          <option value="debug">debug</option>
+          <option value="info">info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+        </select>
+
+        <label className="text-sm">Max concurrency</label>
+        <input
+          className="w-full rounded border px-2 py-1"
+          type="number"
+          min={1}
+          max={16}
+          value={maxConcurrency}
+          onChange={(e) => setMaxConcurrency(Number(e.target.value) || 1)}
+        />
+
+        <label className="text-sm">Default download directory</label>
+        <input
+          className="w-full rounded border px-2 py-1"
+          placeholder="/path/to/downloads"
+          value={defaultDownloadDir}
+          onChange={(e) => setDefaultDownloadDir(e.target.value)}
+        />
+
+        <label className="text-sm">Upload thumbnail alongside file</label>
+        <div>
+          <input
+            id="upload-thumb"
+            type="checkbox"
+            className="mr-2"
+            checked={uploadThumbnail}
+            onChange={(e) => setUploadThumbnail(e.target.checked)}
+          />
+          <label htmlFor="upload-thumb" className="text-sm">
+            Enable
+          </label>
+        </div>
+
+        <div />
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={async () => {
+              await (
+                await nv.settings_set({
+                  logLevel,
+                  maxConcurrency,
+                  defaultDownloadDir: defaultDownloadDir || undefined,
+                  uploadThumbnail,
+                })
+              ).unwrapOr(undefined);
+              setMsg({ msg: "Settings saved", isError: false });
+            }}
+          >
+            Save App Settings
+          </Button>
+        </div>
+      </div>
       <div className="flex gap-2">
         <Button
           type="submit"

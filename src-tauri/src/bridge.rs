@@ -96,6 +96,23 @@ pub async fn backend_set_credentials(bundle: CredentialBundle) -> SpResult<()> {
     r
 }
 
+#[tauri::command]
+pub async fn backend_patch_credentials(patch: crate::sp_backend::R2ConfigPatch) -> SpResult<()> {
+    crate::logger::info("bridge", "backend_patch_credentials called");
+    let r = crate::sp_backend::SpBackend::patch_r2_config(patch);
+    match &r {
+        Ok(_) => crate::logger::info("bridge", "backend_patch_credentials ok"),
+        Err(e) => crate::logger::info(
+            "bridge",
+            &format!("backend_patch_credentials err: {}", e.message),
+        ),
+    }
+    if r.is_ok() {
+        crate::r2_client::invalidate_cached_client().await;
+    }
+    r
+}
+
 // Legacy shims (no-ops / backwards compatibility)
 #[tauri::command]
 pub async fn vault_status() -> SpResult<BackendStatus> {
@@ -301,17 +318,7 @@ pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
         at: chrono::Utc::now().timestamp_millis(),
     })?;
     file.flush().await.ok();
-    // Usage: B 类 GetObject +1；egress 计总拷贝字节
-    let mut b = std::collections::HashMap::new();
-    b.insert("GetObject".into(), 1u64);
-    let _ = crate::usage::UsageSync::record_local_delta(crate::types::UsageDelta {
-        class_a: Default::default(),
-        class_b: b,
-        ingress_bytes: 0,
-        egress_bytes: bytes.len() as u64,
-        added_storage_bytes: 0,
-        deleted_storage_bytes: 0,
-    });
+    // Usage accounted by HTTP layer.
     Ok(())
 }
 

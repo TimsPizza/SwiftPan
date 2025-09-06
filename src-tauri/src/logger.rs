@@ -65,6 +65,12 @@ pub fn init(_app: AppHandle) -> SpResult<()> {
     Ok(())
 }
 
+pub fn set_level_str(level: &str) {
+    if let Some(lock) = LOG_LEVEL.get() {
+        *lock.lock().unwrap_or_else(|p| p.into_inner()) = LogLevel::from_str(level);
+    }
+}
+
 fn log_path() -> SpResult<PathBuf> {
     LOG_PATH.get().cloned().ok_or_else(|| SpError {
         kind: ErrorKind::NotRetriable,

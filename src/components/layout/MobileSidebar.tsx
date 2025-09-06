@@ -21,6 +21,7 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const navItems = [
     { href: "/files", icon: FileIcon, label: "Files" },
     { href: "/usage", icon: BarChartIcon, label: "Usage" },
+    { href: "/transfers", icon: FileIcon, label: "Transfers" },
     { href: "/settings", icon: GearIcon, label: "Settings" },
     { href: "/logs", icon: CodeIcon, label: "Logs" },
   ];
@@ -39,7 +40,7 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
           const Icon = item.icon;
           const isActive = location.pathname === item.href;
           return (
-            <NavLink key={item.href} to={item.href} onClick={onNavigate}>
+            <NavLink key={item.href} to={item.href} onPointerDown={onNavigate}>
               <Button
                 variant={"ghost"}
                 className={cn(
