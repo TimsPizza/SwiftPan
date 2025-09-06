@@ -41,3 +41,16 @@ export function formatRelativeTime(ts: number | Date): string {
   const d = Math.floor(h / 24);
   return `${d}d ago`;
 }
+
+export function formatRelativeTimeFuture(ts: number | Date): string {
+  const now = Date.now();
+  const t = ts instanceof Date ? ts.getTime() : ts;
+  const diff = Math.floor((t - now) / 1000);
+  if (diff < 60) return `${diff}s`;
+  const m = Math.floor(diff / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d}d`;
+}

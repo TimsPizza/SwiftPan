@@ -51,11 +51,11 @@ export default function TransferManager() {
     <Drawer open={open} onOpenChange={setOpen}>
       <DrawerContent side="right">
         <DrawerHeader>
-          <DrawerTitle>Transfers</DrawerTitle>
+          <DrawerTitle>Task Manager</DrawerTitle>
         </DrawerHeader>
         <div className="max-h-[calc(100vh-8rem)] overflow-auto p-2 text-xs">
           {sortedItems.length === 0 ? (
-            <div className="text-muted-foreground p-3">No active transfers</div>
+            <div className="text-muted-foreground p-3">No active tasks</div>
           ) : (
             <ul className="space-y-2">
               {sortedItems.map((t) => (

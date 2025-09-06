@@ -1,4 +1,12 @@
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/Button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import {
   Popover,
   PopoverAnchor,
@@ -12,8 +20,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import type { FileItem as TFileItem } from "@/lib/api/schemas";
 import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
+import { save } from "@tauri-apps/plugin-dialog";
+import { useState } from "react";
+import { toast } from "sonner";
 
 export interface FileItemPopOverMenuProps {
   open?: boolean;
@@ -26,14 +38,14 @@ export interface FileItemPopOverMenuProps {
   contentClassName?: string;
 }
 
-export interface FileSharePopOverProps {
+export interface FileShareDialogProps {
   file: TFileItem;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   centerOnMobile?: boolean;
 }
 
-export interface FileDetailsPopOverProps {
+export interface FileDetailsDialogProps {
   file: TFileItem;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -46,7 +58,6 @@ export const FileItemPopOverMenu = ({
   onOperation,
   trigger,
   anchorPoint,
-  contentClassName,
 }: FileItemPopOverMenuProps) => {
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
@@ -68,165 +79,220 @@ export const FileItemPopOverMenu = ({
         align="start"
         side="bottom"
         sideOffset={0}
-        style={
-          anchorPoint
-            ? { position: "fixed", left: anchorPoint.x, top: anchorPoint.y }
-            : undefined
-        }
-        className={contentClassName}
+        className="flex w-28 flex-col gap-1 px-2 py-1"
       >
         <div
           id="file-item-popover-menu-container"
-          className="flex h-36 w-14 flex-col gap-2"
+          className="flex w-full flex-col gap-1 text-sm"
         >
-          <span onClick={() => onOperation("download")}>Download</span>
-          <span onClick={() => onOperation("downloadPrompt")}>
-            Download to...
-          </span>
-          <span onClick={() => onOperation("share")}>Share</span>
-          <span onClick={() => onOperation("details")}>Details</span>
-          <span onClick={() => onOperation("delete")}>Delete</span>
+          <div className="hover:bg-accent w-full cursor-pointer rounded-md p-1">
+            <span onClick={() => onOperation("downloadPrompt")}>Download</span>{" "}
+          </div>
+          <div className="hover:bg-accent w-full cursor-pointer rounded-md p-1">
+            <span onClick={() => onOperation("share")}>Share</span>
+          </div>
+          <div className="hover:bg-accent w-full cursor-pointer rounded-md p-1">
+            <span onClick={() => onOperation("details")}>Details</span>
+          </div>
+          <div className="hover:bg-accent w-full cursor-pointer rounded-md p-1">
+            <span onClick={() => onOperation("delete")}>Delete</span>
+          </div>
         </div>
       </PopoverContent>
     </Popover>
   );
 };
 
-export function FileDownloadPromptPopover({
+export function FileDownloadDialog({
   open,
   onOpenChange,
   onConfirm,
+  suggestedName,
+  defaultDir,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: (destPath: string) => void;
+  suggestedName?: string;
+  defaultDir?: string | null;
 }) {
-  const [dest, setDest] = (globalThis as any).React?.useState("") ?? [
-    "",
-    () => {},
-  ];
+  const chooseAndConfirm = async () => {
+    try {
+      const path = await save({
+        defaultPath: suggestedName
+          ? `${defaultDir ?? ""}/${suggestedName}`
+          : undefined,
+      });
+      if (path) {
+        onConfirm(String(path));
+      }
+    } catch (e) {
+      // swallow
+    }
+  };
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverAnchor />
-      <PopoverContent
-        align="center"
-        sideOffset={0}
-        className="w-[min(90vw,22rem)]"
-      >
-        <div className="flex flex-col gap-2">
-          <div className="text-sm font-medium">Download to</div>
-          <input
-            className="border-input bg-background text-foreground placeholder:text-muted-foreground ring-offset-background focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-            placeholder="/path/to/save"
-            value={dest}
-            onChange={(e) => setDest((e as any).target.value)}
-          />
-          <div className="flex items-center justify-end gap-2">
-            <button
-              className="rounded px-2 py-1 text-xs"
-              onClick={() => onOpenChange(false)}
-            >
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(90vw,26rem)]">
+        <DialogHeader>
+          <DialogTitle>Download</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <p className="text-muted-foreground text-sm">
+            Choose a destination file to save.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
-            </button>
-            <button
-              className="bg-primary text-primary-foreground hover:bg-primary/90 rounded px-2 py-1 text-xs"
-              onClick={() => {
-                if (dest) onConfirm(dest);
-              }}
-            >
-              Start
-            </button>
+            </Button>
+            <Button onClick={chooseAndConfirm}>Choose…</Button>
           </div>
         </div>
-      </PopoverContent>
-    </Popover>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-export const FileSharePopOver = ({
+export const FileShareDialog = ({
   file,
   open,
   onOpenChange,
-  centerOnMobile,
-}: FileSharePopOverProps) => {
+}: FileShareDialogProps) => {
+  const [ttlHours, setTtlHours] = useState<string>("24");
+  const [pending, setPending] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+  const handleCreate = async () => {
+    setPending(true);
+    try {
+      const ttl_secs = Number(ttlHours) * 3600;
+      const { nv } = await import("@/lib/api/tauriBridge");
+      const r = await nv.share_generate({
+        key: file.id,
+        ttl_secs,
+        download_filename: file.filename,
+      });
+      r.match(
+        (v: any) => setUrl(v.url),
+        (e) => console.error(e),
+      );
+    } finally {
+      setPending(false);
+    }
+  };
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverAnchor />
-      <PopoverContent
-        align="center"
-        sideOffset={0}
-        className={
-          centerOnMobile
-            ? "fixed top-1/2 left-1/2 z-50 w-[min(90vw,22rem)] -translate-x-1/2 -translate-y-1/2 md:relative md:top-auto md:left-auto md:w-72 md:translate-x-0 md:translate-y-0"
-            : undefined
-        }
-      >
-        <div
-          id="file-share-container"
-          className="flex h-36 w-14 flex-col gap-2"
-        >
-          <div
-            id="file-share-container-header"
-            className="mx-4 flex w-full items-center justify-center"
-          >
-            <h3>{`Create Share For ${truncateFilename(file.filename, 12) ?? "unknown"}`}</h3>
-          </div>
-          <div className="flex flex-col gap-2">
-            <span>Expiration in:</span>
-            <Select>
+    <Dialog
+      open={open}
+      onOpenChange={(v: boolean) => {
+        if (!v) setUrl(null);
+        onOpenChange(v);
+      }}
+    >
+      <DialogContent className="w-[min(90vw,26rem)]">
+        <DialogHeader>
+          <DialogTitle>{`Share ${truncateFilename(file.filename, 20) ?? "unknown"}`}</DialogTitle>
+          <Separator className="my-1" />
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-row items-center gap-2">
+            <span>Expiration:</span>
+            <Select value={ttlHours} onValueChange={setTtlHours}>
               <SelectTrigger>
                 <SelectValue placeholder="Select expiration" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="1">1 min</SelectItem>
+                <SelectItem value="1">5 min</SelectItem>
+                <SelectItem value="1">15 min</SelectItem>
                 <SelectItem value="1">1 hour</SelectItem>
-                <SelectItem value="2">2 hours</SelectItem>
-                <SelectItem value="3">3 hours</SelectItem>
-                <SelectItem value="4">4 hours</SelectItem>
-                <SelectItem value="5">5 hours</SelectItem>
-                <SelectItem value="6">6 hours</SelectItem>
-                <SelectItem value="7">7 hours</SelectItem>
+                <SelectItem value="24">24 hours</SelectItem>
+                <SelectItem value="72">3 days</SelectItem>
+                <SelectItem value="168">7 days</SelectItem>
               </SelectContent>
             </Select>
           </div>
-          <div>
-            <p>{`Warning: Share link cannot be tracked by the system, unexpected file download cost might be incurred.`}</p>
-          </div>
+          <p className="text-muted-foreground text-xs">
+            {`Warning: share links are public-accessible and the system cannot track the cost it may incur. `}
+          </p>
+          <p className="text-xs text-red-400">
+            {`Never share them with strangers. Short expirations are recommended.`}
+          </p>
+          {!url ? (
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={pending}
+              >
+                Cancel
+              </Button>
+              <Button disabled={pending} onClick={handleCreate}>
+                Create
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <input
+                className="w-full rounded border px-2 py-1"
+                readOnly
+                value={url}
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(url);
+                    toast.success("Link copied to clipboard");
+                  }}
+                >
+                  Copy
+                </Button>
+                <Button onClick={() => onOpenChange(false)}>Done</Button>
+              </div>
+            </div>
+          )}
         </div>
-      </PopoverContent>
-    </Popover>
+      </DialogContent>
+    </Dialog>
   );
 };
 
-export const FileDetailsPopOver = ({
+export const FileDetailsDialog = ({
   file,
   open,
   onOpenChange,
-  centerOnMobile,
-}: FileDetailsPopOverProps) => {
+}: FileDetailsDialogProps) => {
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverAnchor />
-      <PopoverContent
-        align="center"
-        sideOffset={0}
-        className={
-          centerOnMobile
-            ? "fixed top-1/2 left-1/2 z-50 w-[min(90vw,22rem)] -translate-x-1/2 -translate-y-1/2 md:relative md:top-auto md:left-auto md:w-72 md:translate-x-0 md:translate-y-0"
-            : undefined
-        }
-      >
-        <div className="flex h-36 w-14 flex-col gap-2">
-          <div id="file-created-at">
-            <Badge>{formatRelativeTime(file.uploadedAt)}</Badge>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(90vw,22rem)]">
+        <DialogHeader>
+          <DialogTitle>Details</DialogTitle>
+          <Separator className="my-1" />
+        </DialogHeader>
+        <div className="flex flex-col justify-center gap-2">
+          <div
+            id="file-created-at"
+            className="flex items-center justify-between gap-1"
+          >
+            <Label>Uploaded</Label>
+            <Badge variant="outline">
+              {formatRelativeTime(file.uploadedAt)}
+            </Badge>
           </div>
-          <div id="file-size">
-            <Badge>{formatBytes(file.size)}</Badge>
+          <div
+            id="file-size"
+            className="flex items-center justify-between gap-1"
+          >
+            <Label>Size</Label>
+            <Badge variant="outline">{formatBytes(file.size)}</Badge>
           </div>
-          <div id="file-type">
-            <Badge>{file.mimeType}</Badge>
+          <div
+            id="file-type"
+            className="flex items-center justify-between gap-1"
+          >
+            <Label>Type</Label>
+            <Badge variant="outline">{file.mimeType}</Badge>
           </div>
         </div>
-      </PopoverContent>
-    </Popover>
+      </DialogContent>
+    </Dialog>
   );
 };

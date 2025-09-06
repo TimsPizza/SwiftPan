@@ -23,6 +23,7 @@ pub fn run() {
             crate::bridge::download_ctrl,
             crate::bridge::download_status,
             crate::bridge::share_generate,
+            crate::bridge::share_list,
             crate::bridge::usage_merge_day,
             crate::bridge::usage_list_month,
             crate::bridge::usage_month_cost,

@@ -1,4 +1,7 @@
 import { Button } from "@/components/ui/Button";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
   BarChartIcon,
@@ -6,7 +9,7 @@ import {
   FileIcon,
   GearIcon,
 } from "@radix-ui/react-icons";
-import { CodeIcon, MoonIcon, SunIcon } from "lucide-react";
+import { ClipboardClockIcon, CodeIcon, Share2 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { NavLink, useLocation } from "react-router-dom";
 
@@ -21,7 +24,8 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const navItems = [
     { href: "/files", icon: FileIcon, label: "Files" },
     { href: "/usage", icon: BarChartIcon, label: "Usage" },
-    { href: "/transfers", icon: FileIcon, label: "Transfers" },
+    { href: "/transfers", icon: ClipboardClockIcon, label: "Tasks" },
+    { href: "/shares", icon: Share2, label: "Shares" },
     { href: "/settings", icon: GearIcon, label: "Settings" },
     { href: "/logs", icon: CodeIcon, label: "Logs" },
   ];
@@ -29,13 +33,14 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div
       id="mobile-sidebar-container"
-      className="text-foreground bg-background flex h-full w-[224px] flex-col py-3 pr-3"
+      className="text-foreground border-sidebar-border bg-background mt-7 flex h-full w-[224px] flex-col py-3 pr-3"
     >
-      <div className="mb-3 flex items-center gap-2 px-1">
+      <div className="flex items-center gap-3 px-2">
         <DashboardIcon className="h-5 w-5" />
-        <h2 className="text-base font-semibold tracking-tight">Menu</h2>
+        <span className="text-lg font-semibold tracking-tight">SwiftPan</span>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-1">
+      <Separator className="my-4" />
+      <div className="flex min-h-0 flex-col gap-1">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = location.pathname === item.href;
@@ -62,19 +67,14 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
           );
         })}
       </div>
-      <div className="mt-auto flex items-center justify-end gap-2">
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={toggleTheme}
-          aria-label="Toggle theme"
-        >
-          {theme === "dark" ? (
-            <SunIcon width="20" height="20" />
-          ) : (
-            <MoonIcon width="20" height="20" />
-          )}
-        </Button>
+      <Separator className="my-4" />
+      <div className="flex items-center gap-2 px-3">
+        <Label htmlFor="theme-toggle">Dark Mode</Label>
+        <Switch
+          id="theme-toggle"
+          checked={theme === "dark"}
+          onCheckedChange={toggleTheme}
+        />
       </div>
     </div>
   );

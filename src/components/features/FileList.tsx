@@ -1,9 +1,9 @@
-import FileItem from "@/components/features/FileItem";
+import FileItem, { DesktopFileItem } from "@/components/features/FileItem";
 import {
-  FileDetailsPopOver,
-  FileDownloadPromptPopover,
+  FileDetailsDialog,
+  FileDownloadDialog,
   FileItemPopOverMenu,
-  FileSharePopOver,
+  FileShareDialog,
 } from "@/components/features/FilePopovers";
 import { Button } from "@/components/ui/Button";
 import {
@@ -14,6 +14,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Dialog,
   DialogClose,
   DialogContent,
@@ -23,12 +28,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -37,34 +36,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import {
   Table,
   TableBody,
-  TableCell,
   TableHead,
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
 import { useFileBatchAction } from "@/hooks/use-file-batch-action";
 import type { FileItem as File } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
-import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
+import { nv, queries } from "@/lib/api/tauriBridge";
+import { cn } from "@/lib/utils";
 import { useTransferStore } from "@/store/transfer-store";
 import { open } from "@tauri-apps/plugin-dialog";
-import { motion } from "framer-motion";
 import {
   ArrowUpDown,
   ChevronDown,
   ChevronUp,
-  DownloadIcon,
   FileIcon,
-  FileText,
-  Film,
-  Image,
-  MoreHorizontal,
-  Music,
-  SlidersHorizontal,
-  TrashIcon,
+  UploadIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -73,34 +64,10 @@ interface FileListProps {
   files: File[];
 }
 
-const getFileIcon = (filename: string) => {
-  const ext = filename.split(".").pop()?.toLowerCase();
-
-  if (
-    ["jpg", "jpeg", "png", "gif", "webp", "arw", "cr2", "svg"].includes(
-      ext || "",
-    )
-  ) {
-    return <Image className="h-4 w-4 text-blue-500" />;
-  }
-  if (["mp4", "avi", "mov", "wmv"].includes(ext || "")) {
-    return <Film className="h-4 w-4 text-purple-500" />;
-  }
-  if (["mp3", "wav", "flac", "aac"].includes(ext || "")) {
-    return <Music className="h-4 w-4 text-cyan-500" />;
-  }
-  if (
-    ["pdf", "doc", "docx", "txt", "md", "json", "xml", "yaml", "yml"].includes(
-      ext || "",
-    )
-  ) {
-    return <FileText className="h-4 w-4 text-green-500" />;
-  }
-
-  return <FileIcon className="h-4 w-4 text-gray-500" />;
-};
+// Desktop cell rendering is moved into DesktopFileItem within FileItem.tsx
 
 export const FileList = ({ files }: FileListProps) => {
+  const appSettingsQ = queries.useSettings();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<File | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -277,6 +244,7 @@ export const FileList = ({ files }: FileListProps) => {
       toast.error("File not found");
       return;
     }
+    toast.info(`Download started`);
     await batch.downloadOne(file);
   };
 
@@ -368,144 +336,147 @@ export const FileList = ({ files }: FileListProps) => {
   }
 
   return (
-    <div id="file-list-container" className="flex w-full">
-      <Card className="flex w-full min-w-0 flex-col gap-4">
+    <div id="file-list-container" className="max-h-[80%] min-h-0 flex-1">
+      <div className="flex w-full min-w-0 flex-col gap-4 overflow-y-auto">
         <CardHeader className="flex flex-col gap-2">
           <CardTitle className="flex w-full items-center justify-between">
             Files ({processedFiles.length}){" "}
             <div className="ml-auto">
-              <Button onClick={handleUploadClick} size="sm">
-                Upload
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => useTransferStore.getState().ui.toggle()}
-              >
-                Transfers
+              <Button asChild onClick={handleUploadClick} size="sm">
+                <div>
+                  <UploadIcon className="mr-1 h-4 w-4" />
+                  Upload
+                </div>
               </Button>
             </div>
           </CardTitle>
           <CardDescription>Manage your uploaded files</CardDescription>
         </CardHeader>
         <CardContent className="flex w-full flex-col gap-2">
-          {/* Filters toggle */}
-          <div className="flex justify-start">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setFiltersOpen((v) => !v)}
-              aria-expanded={filtersOpen}
-              aria-controls="filelist-filters"
-            >
-              <SlidersHorizontal className="mr-2 h-4 w-4" />
-              Filters
-            </Button>
-          </div>
-
           {/* Collapsible filter controls (all screens) */}
-          <div
+          <Separator className="my-2" />
+          <Collapsible
+            className="flex flex-col gap-2"
+            open={filtersOpen}
             id="filelist-filters"
-            className={`${filtersOpen ? "max-h-[640px] opacity-100" : "max-h-0 opacity-0"} overflow-hidden transition-[max-height,opacity] duration-200`}
           >
-            <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
-              <div className="flex items-center gap-2">
-                <Input
-                  placeholder="Search files..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+            <CollapsibleTrigger
+              onPointerDown={() => setFiltersOpen((v) => !v)}
+              asChild
+              className="flex w-20"
+            >
+              <Button variant="outline" size="sm">
+                <ChevronUp
+                  className={cn(
+                    "transition-transform duration-200",
+                    filtersOpen && "rotate-180",
+                  )}
                 />
+                Filters
+              </Button>
+            </CollapsibleTrigger>
+
+            <CollapsibleContent>
+              <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+                <div className="flex items-center gap-2">
+                  <Input
+                    placeholder="Search files..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={typeFilter}
+                    onValueChange={(
+                      v: "all" | "image" | "video" | "audio" | "doc" | "other",
+                    ) => setTypeFilter(v)}
+                  >
+                    <SelectTrigger className="w-full" size="sm">
+                      <SelectValue placeholder="Type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Types</SelectItem>
+                      <SelectItem value="image">Images</SelectItem>
+                      <SelectItem value="video">Videos</SelectItem>
+                      <SelectItem value="audio">Audio</SelectItem>
+                      <SelectItem value="doc">Documents</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={timeFilter}
+                    onValueChange={(v: "any" | "24h" | "7d" | "30d") =>
+                      setTimeFilter(v)
+                    }
+                  >
+                    <SelectTrigger className="w-32" size="sm">
+                      <SelectValue placeholder="Uploaded" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="any">Any time</SelectItem>
+                      <SelectItem value="24h">Last 24h</SelectItem>
+                      <SelectItem value="7d">Last 7 days</SelectItem>
+                      <SelectItem value="30d">Last 30 days</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="Min size (MB)"
+                    value={minSizeMB}
+                    onChange={(e) => setMinSizeMB(e.target.value)}
+                  />
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="Max size (MB)"
+                    value={maxSizeMB}
+                    onChange={(e) => setMaxSizeMB(e.target.value)}
+                  />
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Select
-                  value={typeFilter}
-                  onValueChange={(
-                    v: "all" | "image" | "video" | "audio" | "doc" | "other",
-                  ) => setTypeFilter(v)}
-                >
-                  <SelectTrigger className="w-full" size="sm">
-                    <SelectValue placeholder="Type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Types</SelectItem>
-                    <SelectItem value="image">Images</SelectItem>
-                    <SelectItem value="video">Videos</SelectItem>
-                    <SelectItem value="audio">Audio</SelectItem>
-                    <SelectItem value="doc">Documents</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={timeFilter}
-                  onValueChange={(v: "any" | "24h" | "7d" | "30d") =>
-                    setTimeFilter(v)
-                  }
-                >
-                  <SelectTrigger className="w-32" size="sm">
-                    <SelectValue placeholder="Uploaded" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="any">Any time</SelectItem>
-                    <SelectItem value="24h">Last 24h</SelectItem>
-                    <SelectItem value="7d">Last 7 days</SelectItem>
-                    <SelectItem value="30d">Last 30 days</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground text-xs">Sort</span>
+                  <Select
+                    value={(sortBy ?? "uploadedAt") as any}
+                    onValueChange={(
+                      v: "name" | "size" | "uploadedAt" | "type",
+                    ) => setSortBy(v)}
+                  >
+                    <SelectTrigger className="w-full" size="sm">
+                      <SelectValue placeholder="Sort" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="name">Name</SelectItem>
+                      <SelectItem value="size">Size</SelectItem>
+                      <SelectItem value="uploadedAt">Uploaded</SelectItem>
+                      <SelectItem value="type">Type</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground text-xs">Order</span>
+                  <Select
+                    value={sortOrder}
+                    onValueChange={(v: "asc" | "desc") => setSortOrder(v)}
+                  >
+                    <SelectTrigger className="w-full" size="sm">
+                      <SelectValue placeholder="Order" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="asc">Ascending</SelectItem>
+                      <SelectItem value="desc">Descending</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="flex items-center justify-end gap-2">
-                <Input
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="Min size (MB)"
-                  value={minSizeMB}
-                  onChange={(e) => setMinSizeMB(e.target.value)}
-                />
-                <Input
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="Max size (MB)"
-                  value={maxSizeMB}
-                  onChange={(e) => setMaxSizeMB(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground text-xs">Sort by</span>
-                <Select
-                  value={(sortBy ?? "uploadedAt") as any}
-                  onValueChange={(v: "name" | "size" | "uploadedAt" | "type") =>
-                    setSortBy(v)
-                  }
-                >
-                  <SelectTrigger className="w-full" size="sm">
-                    <SelectValue placeholder="Sort by" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="name">Name</SelectItem>
-                    <SelectItem value="size">Size</SelectItem>
-                    <SelectItem value="uploadedAt">Uploaded</SelectItem>
-                    <SelectItem value="type">Type</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground text-xs">Order</span>
-                <Select
-                  value={sortOrder}
-                  onValueChange={(v: "asc" | "desc") => setSortOrder(v)}
-                >
-                  <SelectTrigger className="w-full" size="sm">
-                    <SelectValue placeholder="Order" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="asc">Ascending</SelectItem>
-                    <SelectItem value="desc">Descending</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </div>
+            </CollapsibleContent>
+          </Collapsible>
+          <Separator className="my-2" />
 
           {/* batch actions */}
           {batch.selectedCount > 0 && (
@@ -626,118 +597,16 @@ export const FileList = ({ files }: FileListProps) => {
               </TableHeader>
               <TableBody>
                 {pagedFiles.map((file, index) => (
-                  <motion.tr
+                  <DesktopFileItem
                     key={file.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.05 }}
-                    className="group"
-                  >
-                    <TableCell>
-                      <input
-                        type="checkbox"
-                        aria-label={`Select ${file.filename}`}
-                        className="size-4 cursor-pointer"
-                        checked={batch.selectedIds.has(file.id)}
-                        onChange={() => batch.toggleOne(file.id)}
-                      />
-                    </TableCell>
-                    <TableCell className="min-w-0 whitespace-normal!">
-                      <div className="flex min-w-0 items-center gap-3">
-                        {file.thumbnailKey ? (
-                          <img
-                            src={`data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='16' height='16' fill='%23d1d5db'/%3E%3C/svg%3E`}
-                            alt="thumb"
-                            className="h-4 w-4 rounded-sm"
-                          />
-                        ) : (
-                          getFileIcon(file.filename)
-                        )}
-                        <div className="flex min-w-0 flex-col">
-                          <p className="line-clamp-1 text-sm font-medium break-all">
-                            {truncateFilename(file.filename, 40)}
-                          </p>
-                          <p className="text-muted-foreground text-xs break-all">
-                            {file.id}
-                          </p>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-sm font-medium">
-                        {formatBytes(file.size)}
-                      </span>
-                    </TableCell>
-                    <TableCell className="hidden lg:table-cell">
-                      <span className="text-muted-foreground text-sm">
-                        {formatRelativeTime(file.uploadedAt)}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {/* Inline actions on medium and larger screens */}
-                      <div className="hidden items-center justify-center gap-1 md:flex">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDownload(file.id)}
-                          aria-label="Download"
-                          title="Download"
-                        >
-                          <DownloadIcon className="h-4 w-4" />
-                        </Button>
-                        {/* Desktop three-dots opens shared menu */}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label="More"
-                          title="More"
-                          onClick={(e) => {
-                            const p = { x: e.clientX, y: e.clientY };
-                            setActiveFile(file);
-                            setMenuAnchor(p);
-                            setMenuOpen(true);
-                          }}
-                        >
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteClick(file)}
-                          aria-label="Delete"
-                          title="Delete"
-                        >
-                          <TrashIcon className="h-4 w-4" />
-                        </Button>
-                      </div>
-
-                      {/* Condensed dropdown on small screens */}
-                      <div className="md:hidden">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm">
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem
-                              onClick={() => handleDownload(file.id)}
-                            >
-                              <DownloadIcon className="mr-2 h-4 w-4" />
-                              Download
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => handleDeleteClick(file)}
-                              className="text-destructive focus:text-destructive"
-                            >
-                              <TrashIcon className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </TableCell>
-                  </motion.tr>
+                    index={index}
+                    file={file}
+                    selected={batch.selectedIds.has(file.id)}
+                    onSelect={() => batch.toggleOne(file.id)}
+                    onDownload={() => handleDownload(file.id)}
+                    onMoreClick={(p) => openMenuAt(p, file)}
+                    onDelete={() => handleDeleteClick(file)}
+                  />
                 ))}
               </TableBody>
             </Table>
@@ -753,7 +622,6 @@ export const FileList = ({ files }: FileListProps) => {
                 onSelect={() => batch.toggleOne(file.id)}
                 onDownload={() => handleDownload(file.id)}
                 onMoreClick={(p) => openMenuAt(p, file)}
-                onContextMenuOpen={(p) => openMenuAt(p, file)}
                 onLongPress={(p) => openMenuAt(p, file)}
               />
             ))}
@@ -768,9 +636,9 @@ export const FileList = ({ files }: FileListProps) => {
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page <= 1}
               >
-                Prev
+                {"<"}
               </Button>
-              <span className="text-sm">
+              <span className="text-xs">
                 Page {page} of {totalPages}
               </span>
               <Button
@@ -779,12 +647,12 @@ export const FileList = ({ files }: FileListProps) => {
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={page >= totalPages}
               >
-                Next
+                {">"}
               </Button>
             </div>
           </div>
         </CardContent>
-      </Card>
+      </div>
 
       {/* delete dialog */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
@@ -837,31 +705,31 @@ export const FileList = ({ files }: FileListProps) => {
         anchorPoint={menuAnchor ?? undefined}
       />
 
-      {/* Share popover */}
+      {/* Share dialog */}
       {activeFile && (
-        <FileSharePopOver
+        <FileShareDialog
           file={activeFile}
           open={shareOpen}
           onOpenChange={setShareOpen}
-          centerOnMobile
         />
       )}
 
-      {/* Details popover */}
+      {/* Details dialog */}
       {activeFile && (
-        <FileDetailsPopOver
+        <FileDetailsDialog
           file={activeFile}
           open={detailsOpen}
           onOpenChange={setDetailsOpen}
-          centerOnMobile
         />
       )}
 
-      {/* Download prompt popover */}
+      {/* Download dialog */}
       {activeFile && (
-        <FileDownloadPromptPopover
+        <FileDownloadDialog
           open={downloadPromptOpen}
           onOpenChange={setDownloadPromptOpen}
+          suggestedName={activeFile.filename}
+          defaultDir={appSettingsQ.data?.defaultDownloadDir ?? null}
           onConfirm={async (dest) => {
             setDownloadPromptOpen(false);
             const active = useTransferStore.getState().items;

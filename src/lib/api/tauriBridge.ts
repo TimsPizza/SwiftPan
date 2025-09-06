@@ -95,13 +95,15 @@ export const nv = {
     resultInvoke<void>("backend_set_credentials", {
       bundle,
     }),
-  backend_patch_credentials: (patch: Partial<{
-    endpoint: string;
-    access_key_id: string;
-    secret_access_key: string;
-    bucket: string;
-    region?: string;
-  }>) =>
+  backend_patch_credentials: (
+    patch: Partial<{
+      endpoint: string;
+      access_key_id: string;
+      secret_access_key: string;
+      bucket: string;
+      region?: string;
+    }>,
+  ) =>
     resultInvoke<void>("backend_patch_credentials", {
       patch,
     }),
@@ -143,6 +145,17 @@ export const nv = {
     ttl_secs: number;
     download_filename?: string;
   }) => resultInvoke<ShareLink>("share_generate", { params }),
+  share_list: () =>
+    resultInvoke<
+      {
+        key: string;
+        url: string;
+        created_at_ms: number;
+        expires_at_ms: number;
+        ttl_secs: number;
+        download_filename?: string;
+      }[]
+    >("share_list"),
   // Upload controls
   upload_new: (params: {
     key: string;
@@ -285,9 +298,7 @@ export const mutations = {
         if (bundle && bundle.r2) {
           await await nv.backend_set_credentials(bundle).unwrapOr(undefined);
         } else {
-          await await nv
-            .backend_patch_credentials(bundle)
-            .unwrapOr(undefined);
+          await await nv.backend_patch_credentials(bundle).unwrapOr(undefined);
         }
       },
       ...opts,

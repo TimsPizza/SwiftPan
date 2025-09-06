@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/Button";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   SettingsPatchSchema,
   type SettingsFormValues,
@@ -6,6 +8,7 @@ import {
 import { mutations, nv, queries } from "@/lib/api/tauriBridge";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { toast } from "sonner";
 
 export default function SettingsPage() {
   const appSettingsQ = queries.useSettings();
@@ -63,10 +66,7 @@ export default function SettingsPage() {
       patch.endpoint = values.endpoint.trim();
     if (values.access_key_id && values.access_key_id.trim().length > 0)
       patch.access_key_id = values.access_key_id.trim();
-    if (
-      values.secret_access_key &&
-      values.secret_access_key.trim().length > 0
-    )
+    if (values.secret_access_key && values.secret_access_key.trim().length > 0)
       patch.secret_access_key = values.secret_access_key.trim();
     if (values.bucket && values.bucket.trim().length > 0)
       patch.bucket = values.bucket.trim();
@@ -83,7 +83,7 @@ export default function SettingsPage() {
     }
     await saveMutation.mutateAsync(parsed.data);
     await Promise.all([statusQ.refetch(), credsQ.refetch()]);
-    setMsg({ msg: "Saved", isError: false });
+    toast.success("Settings saved");
   });
 
   // Unlock flow removed — vault has no lock semantics now
@@ -94,7 +94,7 @@ export default function SettingsPage() {
   });
 
   const sanityMutation = mutations.useR2Sanity({
-    onSuccess: () => setMsg({ msg: "R2 connectivity OK", isError: false }),
+    onSuccess: () => void toast.success("R2 connectivity OK"),
     onError: (e: any) => {
       // eslint-disable-next-line no-console
       console.error("[ui] r2_sanity_check error", e);
@@ -104,178 +104,199 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-3">
-      {/* Vault lock semantics removed; show simple configured hint if needed */}
-      {/* <div className="text-muted-foreground text-sm">Configured</div> */}
-      <form onSubmit={save} className="grid max-w-xl grid-cols-2 gap-2">
-        <label className="text-sm">Endpoint</label>
-        <div>
-          <input
-            className="w-full rounded border px-2 py-1"
-            placeholder={
-              redacted?.endpoint || "https://<account>.r2.cloudflarestorage.com"
-            }
-            {...register("endpoint")}
-          />
-          {errors.endpoint && (
-            <div className="mt-1 text-xs text-red-600">
-              {errors.endpoint.message}
+      <Tabs defaultValue="creds" className="">
+        <TabsList className="grid w-full grid-cols-2 md:max-w-[224px]">
+          <TabsTrigger value="creds">R2 Credentials</TabsTrigger>
+          <TabsTrigger value="app">App Settings</TabsTrigger>
+        </TabsList>
+        <TabsContent value="creds" className="flex flex-col gap-2">
+          <form onSubmit={save} className="grid max-w-xl grid-cols-2 gap-2">
+            <label className="text-sm">Endpoint</label>
+            <div>
+              <input
+                className="w-full rounded border px-2 py-1"
+                placeholder={
+                  redacted?.endpoint ||
+                  "https://<account>.r2.cloudflarestorage.com"
+                }
+                {...register("endpoint")}
+              />
+              {errors.endpoint && (
+                <div className="mt-1 text-xs text-red-600">
+                  {errors.endpoint.message}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        <label className="text-sm">Access Key ID</label>
-        <div>
-          <input
-            className="w-full rounded border px-2 py-1"
-            placeholder={redacted?.access_key_id || "Access Key ID"}
-            {...register("access_key_id")}
-          />
-          {errors.access_key_id && (
-            <div className="mt-1 text-xs text-red-600">
-              {errors.access_key_id.message}
+            <label className="text-sm">Access Key ID</label>
+            <div>
+              <input
+                className="w-full rounded border px-2 py-1"
+                placeholder={redacted?.access_key_id || "Access Key ID"}
+                {...register("access_key_id")}
+              />
+              {errors.access_key_id && (
+                <div className="mt-1 text-xs text-red-600">
+                  {errors.access_key_id.message}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        <label className="text-sm">Secret Access Key</label>
-        <div>
-          <input
-            className="w-full rounded border px-2 py-1"
-            type="password"
-            placeholder={redacted?.secret_access_key || "Secret Access Key"}
-            {...register("secret_access_key")}
-          />
-          {errors.secret_access_key && (
-            <div className="mt-1 text-xs text-red-600">
-              {errors.secret_access_key.message}
+            <label className="text-sm">Secret Access Key</label>
+            <div>
+              <input
+                className="w-full rounded border px-2 py-1"
+                type="password"
+                placeholder={redacted?.secret_access_key || "Secret Access Key"}
+                {...register("secret_access_key")}
+              />
+              {errors.secret_access_key && (
+                <div className="mt-1 text-xs text-red-600">
+                  {errors.secret_access_key.message}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        <label className="text-sm">Bucket</label>
-        <div>
-          <input
-            className="w-full rounded border px-2 py-1"
-            placeholder={redacted?.bucket || "Bucket"}
-            {...register("bucket")}
-          />
-          {errors.bucket && (
-            <div className="mt-1 text-xs text-red-600">
-              {errors.bucket.message}
+            <label className="text-sm">Bucket</label>
+            <div>
+              <input
+                className="w-full rounded border px-2 py-1"
+                placeholder={redacted?.bucket || "Bucket"}
+                {...register("bucket")}
+              />
+              {errors.bucket && (
+                <div className="mt-1 text-xs text-red-600">
+                  {errors.bucket.message}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        <label className="text-sm">Region</label>
-        <div>
-          <input
-            className="w-full rounded border px-2 py-1"
-            placeholder={redacted?.region || "Region"}
-            {...register("region")}
-          />
-          {errors.region && (
-            <div className="mt-1 text-xs text-red-600">
-              {errors.region.message}
+            <label className="text-sm">Region</label>
+            <div>
+              <input
+                className="w-full rounded border px-2 py-1"
+                placeholder={redacted?.region || "Region"}
+                {...register("region")}
+              />
+              {errors.region && (
+                <div className="mt-1 text-xs text-red-600">
+                  {errors.region.message}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Device ID and Master Password removed */}
-      </form>
-      <div className="mt-4 grid max-w-xl grid-cols-2 gap-2">
-        <label className="text-sm">Log level</label>
-        <select
-          className="w-full rounded border px-2 py-1"
-          value={logLevel}
-          onChange={(e) => {
-            setLogLevel(e.target.value);
-            void nv.log_set_level(e.target.value as any);
-          }}
-        >
-          <option value="trace">trace</option>
-          <option value="debug">debug</option>
-          <option value="info">info</option>
-          <option value="warn">warn</option>
-          <option value="error">error</option>
-        </select>
+            {/* Device ID and Master Password removed */}
+          </form>
+          <div className="flex gap-2">
+            <Button
+              type="submit"
+              form=""
+              onClick={save}
+              disabled={saveMutation.isLoading}
+            >
+              {saveMutation.isLoading ? "Saving…" : "Save Bundle"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => sanityMutation.mutate()}
+              disabled={sanityMutation.isLoading}
+            >
+              {sanityMutation.isLoading ? "Testing…" : "Test Connection"}
+            </Button>
+          </div>
+        </TabsContent>
+        <TabsContent value="app">
+          <div className="mt-4 grid max-w-xl grid-cols-2 gap-2">
+            <label className="text-sm">Log level</label>
+            <select
+              className="w-full rounded border px-2 py-1"
+              value={logLevel}
+              onChange={(e) => {
+                setLogLevel(e.target.value);
+                void nv.log_set_level(e.target.value as any);
+              }}
+            >
+              <option value="trace">trace</option>
+              <option value="debug">debug</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
 
-        <label className="text-sm">Max concurrency</label>
-        <input
-          className="w-full rounded border px-2 py-1"
-          type="number"
-          min={1}
-          max={16}
-          value={maxConcurrency}
-          onChange={(e) => setMaxConcurrency(Number(e.target.value) || 1)}
-        />
+            <label className="text-sm">Max concurrency</label>
+            <input
+              className="w-full rounded border px-2 py-1"
+              type="number"
+              min={1}
+              max={16}
+              value={maxConcurrency}
+              onChange={(e) => setMaxConcurrency(Number(e.target.value) || 1)}
+            />
 
-        <label className="text-sm">Default download directory</label>
-        <input
-          className="w-full rounded border px-2 py-1"
-          placeholder="/path/to/downloads"
-          value={defaultDownloadDir}
-          onChange={(e) => setDefaultDownloadDir(e.target.value)}
-        />
+            <label className="text-sm">Default download directory</label>
+            <div className="flex items-center gap-2">
+              <input
+                className="w-full rounded border px-2 py-1"
+                placeholder="/path/to/downloads"
+                value={defaultDownloadDir}
+                onChange={(e) => setDefaultDownloadDir(e.target.value)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={async () => {
+                  const { open } = await import("@tauri-apps/plugin-dialog");
+                  const pick = await open({ directory: true, multiple: false });
+                  if (pick) setDefaultDownloadDir(String(pick));
+                }}
+              >
+                Choose…
+              </Button>
+            </div>
 
-        <label className="text-sm">Upload thumbnail alongside file</label>
-        <div>
-          <input
-            id="upload-thumb"
-            type="checkbox"
-            className="mr-2"
-            checked={uploadThumbnail}
-            onChange={(e) => setUploadThumbnail(e.target.checked)}
-          />
-          <label htmlFor="upload-thumb" className="text-sm">
-            Enable
-          </label>
-        </div>
-
-        <div />
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={async () => {
-              await (
-                await nv.settings_set({
-                  logLevel,
-                  maxConcurrency,
-                  defaultDownloadDir: defaultDownloadDir || undefined,
-                  uploadThumbnail,
-                })
-              ).unwrapOr(undefined);
-              setMsg({ msg: "Settings saved", isError: false });
-            }}
-          >
-            Save App Settings
-          </Button>
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <Button
-          type="submit"
-          form=""
-          onClick={save}
-          disabled={saveMutation.isLoading}
-        >
-          {saveMutation.isLoading ? "Saving…" : "Save Bundle"}
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => sanityMutation.mutate()}
-          disabled={sanityMutation.isLoading}
-        >
-          {sanityMutation.isLoading ? "Testing…" : "Test Connection"}
-        </Button>
-      </div>
+            <label className="text-sm">Upload thumbnail alongside file</label>
+            <div>
+              <Switch
+                id="upload-thumb"
+                checked={uploadThumbnail}
+                onCheckedChange={() => setUploadThumbnail((prev) => !prev)}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  const r = await nv.settings_set({
+                    logLevel,
+                    maxConcurrency,
+                    defaultDownloadDir: defaultDownloadDir || undefined,
+                    uploadThumbnail,
+                  });
+                  r.match(
+                    (_ok) => {
+                      toast.success("Settings saved");
+                    },
+                    (_err) => {
+                      toast.error("Failed to save settings");
+                    },
+                  );
+                }}
+              >
+                Save App Settings
+              </Button>
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
       {(statusQ.isLoading || credsQ.isLoading) && (
         <div className="text-sm">Loading status…</div>
       )}
+      {/* no longer show success msg */}
       {msg && (
         <div
           className={`text-sm ${msg.isError ? "text-red-600" : "text-green-700"}`}
         >
-          {msg.msg}
+          {msg.isError && msg.msg}
         </div>
       )}
     </div>

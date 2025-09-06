@@ -5,6 +5,7 @@ import LogPage from "./pages/LogPage";
 import SettingsPage from "./pages/SettingsPage";
 import TransfersPage from "./pages/TransfersPage";
 import UsagePage from "./pages/UsagePage";
+import SharesPage from "./pages/SharesPage";
 
 // Next.js-like routing structure using nested routes
 // - RootLayout provides global providers and hydration gate
@@ -19,6 +20,7 @@ export const routes: RouteObject[] = [
       { path: "files", element: <FilesPage /> },
       { path: "transfers", element: <TransfersPage /> },
       { path: "usage", element: <UsagePage /> },
+      { path: "shares", element: <SharesPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "logs", element: <LogPage /> },
     ],

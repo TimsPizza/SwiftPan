@@ -228,16 +228,12 @@ pub async fn share_generate(params: ShareParams) -> SpResult<ShareLink> {
             params.download_filename.is_some()
         ),
     );
-    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
-    let (url, expires_at_ms) = r2_client::presign_get_url(
-        &client,
-        &params.key,
-        params.ttl_secs,
-        params.download_filename,
-    )
-    .await?;
-    Ok(ShareLink { url, expires_at_ms })
+    crate::share::generate_share_link(params).await
+}
+
+#[tauri::command]
+pub async fn share_list() -> SpResult<Vec<crate::share::ShareEntry>> {
+    crate::share::list_share_entries().await
 }
 
 #[tauri::command]

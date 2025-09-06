@@ -15,6 +15,37 @@ label {
   -webkit-tap-highlight-color: rgba(0, 0, 0, 0.1);
 }
 
+.CollapsibleContent {
+  overflow: hidden;
+}
+
+.CollapsibleContent[data-state="open"] {
+  animation: slideDown 150ms linear;
+}
+
+.CollapsibleContent[data-state="closed"] {
+  animation: slideUp 150ms linear;
+}
+
+@keyframes slideDown {
+  from {
+    height: 0;
+  }
+
+  to {
+    height: var(--radix-collapsible-content-height);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    height: var(--radix-collapsible-content-height);
+  }
+
+  to {
+    height: 0;
+  }
+}
 
 /* Material-like ripple animation utility: attach on touchstart/click via JS */
 .ripple-start {
@@ -29,18 +60,30 @@ label {
   opacity: 0;
 }
 
+/* Safe area + dynamic viewport fix for Android/iOS */
 :root {
-  --safe-top: env(safe-area-inset-top, 0px) !important;
+  --safe-top: env(safe-area-inset-top, 0px);
+  /* Optional runtime fallback injected for Android where safe-area is 0 */
+  --fallback-top: 0px;
+  --resolved-safe-top: max(var(--safe-top), var(--fallback-top));
+  /* Fallback to 100vh; prefer dynamic viewport where supported */
+  --app-vh: 100vh;
 }
 
-body {
-  padding-top: max(var(--safe-top), 24px) !important;
+@supports (height: 100dvh) {
+  :root {
+    --app-vh: 100dvh;
+  }
 }
 
-#mobile-sidebar-container #sidebar-container {
-  padding-top: max(var(--safe-top), 24px) !important;
+/* App viewport that avoids double-counting safe area.
+   Height excludes status bar area, top padding fills it with background. */
+.app-viewport {
+  height: calc(var(--app-vh) - var(--resolved-safe-top));
+  padding-top: var(--resolved-safe-top);
 }
 
+/* Removed old fixed padding approach that caused 100vh overflow */
 
 @custom-variant dark (&:is(.dark *));
 

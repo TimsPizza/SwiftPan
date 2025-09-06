@@ -50,18 +50,16 @@ export default function TransfersPage() {
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Transfers</CardTitle>
+          <CardTitle>Task Manager</CardTitle>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={clearFinished}>
-              Clear finished
+              Clear completed
             </Button>
           </div>
         </CardHeader>
         <CardContent>
           {sorted.length === 0 ? (
-            <div className="text-muted-foreground p-3 text-sm">
-              No transfers
-            </div>
+            <div className="text-muted-foreground p-3 text-sm">No tasks</div>
           ) : (
             <ul className="space-y-2">
               {sorted.map((t) => {
