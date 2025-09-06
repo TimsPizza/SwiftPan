@@ -10,6 +10,7 @@ static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static LOG_LEVEL: OnceLock<Mutex<LogLevel>> = OnceLock::new();
 static LOG_CACHE: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
 static LOG_PRIMED: OnceLock<Mutex<bool>> = OnceLock::new();
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024; // 4MB
 const MAX_CACHE_LINES: usize = 4000;
@@ -58,6 +59,7 @@ pub fn init(_app: AppHandle) -> SpResult<()> {
         .set(Mutex::new(VecDeque::with_capacity(MAX_CACHE_LINES + 128)))
         .ok();
     LOG_PRIMED.set(Mutex::new(false)).ok();
+    APP_HANDLE.set(_app).ok();
     // touch file
     let _ = OpenOptions::new().create(true).append(true).open(&p);
     Ok(())
@@ -137,6 +139,21 @@ pub fn log(level: LogLevel, target: &str, msg: &str) {
     let line = format!("{} [{}] {}: {}", ts(), level.as_str(), target, msg);
     push_cache(line.clone());
     append_file(&line);
+    // Emit log event asynchronously to avoid potential blocking on Android
+    if let Some(app) = APP_HANDLE.get() {
+        let app_handle = app.clone();
+        let payload = serde_json::json!({
+            "ts": ts(),
+            "level": level.as_str(),
+            "target": target,
+            "message": msg,
+            "line": line,
+        });
+        tauri::async_runtime::spawn(async move {
+            use tauri::Emitter;
+            let _ = app_handle.emit("sp://log_event", payload);
+        });
+    }
 }
 
 pub fn trace(target: &str, msg: &str) {
@@ -214,4 +231,34 @@ pub async fn log_set_level(level: String) -> SpResult<()> {
         *lock.lock().unwrap_or_else(|p| p.into_inner()) = LogLevel::from_str(&level);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn log_get_status() -> SpResult<serde_json::Value> {
+    let level = if let Some(lock) = LOG_LEVEL.get() {
+        let cur = lock.lock().unwrap_or_else(|p| p.into_inner());
+        cur.as_str().to_string()
+    } else {
+        LogLevel::Info.as_str().to_string()
+    };
+    let cache_len = LOG_CACHE
+        .get()
+        .map(|c| {
+            let q = c.lock().unwrap_or_else(|p| p.into_inner());
+            q.len() as u32
+        })
+        .unwrap_or(0);
+    let (file_path, file_size_bytes) = match log_path() {
+        Ok(p) => {
+            let sz = fs::metadata(&p).ok().map(|m| m.len()).unwrap_or(0);
+            (p.to_string_lossy().to_string(), sz)
+        }
+        Err(_) => (String::new(), 0),
+    };
+    Ok(serde_json::json!({
+        "level": level,
+        "cache_lines": cache_len,
+        "file_path": file_path,
+        "file_size_bytes": file_size_bytes,
+    }))
 }

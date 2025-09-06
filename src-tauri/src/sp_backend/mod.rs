@@ -13,8 +13,6 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CredentialBundle {
     pub r2: R2Config,
-    pub device_id: DeviceId,
-    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -42,7 +40,7 @@ impl SpBackend {
         Ok(current_state())
     }
 
-    pub fn set_with_plaintext(bundle: CredentialBundle, _master_password: &str) -> SpResult<()> {
+    pub fn set_with_plaintext(bundle: CredentialBundle) -> SpResult<()> {
         let dir = vault_dir()?;
         fs::create_dir_all(&dir).map_err(|e| SpError {
             kind: ErrorKind::NotRetriable,
@@ -64,7 +62,7 @@ impl SpBackend {
         // Derive/store a per-device key (no user unlock required)
         let key = load_or_create_device_key()?;
         // Marker KDF params for compatibility
-        let mut zero_salt = [0u8; 16];
+        let zero_salt = [0u8; 16];
         // keep zero
         let kdf_params = KdfParams {
             algo: "device-key".into(),
@@ -110,8 +108,7 @@ impl SpBackend {
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
-        let meta =
-            serde_json::json!({"device_id": bundle.device_id, "created_at": bundle.created_at});
+        let meta = serde_json::json!({"version": 1});
         let meta_bytes = serde_json::to_vec_pretty(&meta).map_err(|e| SpError {
             kind: ErrorKind::NotRetriable,
             message: format!("serialize meta failed: {e}"),
@@ -236,32 +233,58 @@ impl SpBackend {
     }
 
     pub fn get_decrypted_bundle_if_unlocked() -> SpResult<CredentialBundle> {
-        let st = STATE.lock().map_err(|_| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "backend state lock poisoned".into(),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        let st = STATE.lock().map_err(|_| {
+            crate::logger::error(
+                "sp_backend",
+                "get_decrypted_bundle_if_unlocked backend state lock poisoned",
+            );
+            SpError {
+                kind: ErrorKind::NotRetriable,
+                message: "backend state lock poisoned".into(),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
         if let Some(b) = &st.creds {
+            crate::logger::info(
+                "sp_backend",
+                "get_decrypted_bundle_if_unlocked returning bundle",
+            );
             return Ok(b.clone());
         }
         drop(st);
         // Attempt lazy load from disk using device key
+        crate::logger::info(
+            "sp_backend",
+            "get_decrypted_bundle_if_unlocked attempting lazy load from disk",
+        );
         let dir = vault_dir()?;
-        let pkg_bytes = fs::read(dir.join("vault.sp")).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("credentials not found: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        let pkg_bytes = fs::read(dir.join("vault.sp")).map_err(|e| {
+            crate::logger::error(
+                "sp_backend",
+                "get_decrypted_bundle_if_unlocked read vault.sp failed",
+            );
+            SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("read vault.sp failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
-        let pkg: BackendPackage = serde_json::from_slice(&pkg_bytes).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("parse credentials package failed: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+        let pkg: BackendPackage = serde_json::from_slice(&pkg_bytes).map_err(|e| {
+            crate::logger::error(
+                "sp_backend",
+                "get_decrypted_bundle_if_unlocked parse credentials package failed",
+            );
+            SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("parse credentials package failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            }
         })?;
         let key = load_or_create_device_key()?;
         let cipher = XChaCha20Poly1305::new((&key).into());
@@ -385,15 +408,9 @@ pub(crate) fn vault_dir() -> SpResult<PathBuf> {
 #[derive(Default)]
 struct BackendMemory {
     creds: Option<CredentialBundle>,
-    device_id: Option<DeviceId>,
 }
 
-static STATE: Lazy<Mutex<BackendMemory>> = Lazy::new(|| {
-    Mutex::new(BackendMemory {
-        creds: None,
-        device_id: None,
-    })
-});
+static STATE: Lazy<Mutex<BackendMemory>> = Lazy::new(|| Mutex::new(BackendMemory { creds: None }));
 
 fn current_state() -> BackendState {
     // If poisoned, recover inner state instead of panicking
@@ -408,6 +425,6 @@ fn current_state() -> BackendState {
     BackendState {
         is_unlocked: g.creds.is_some() || dir_exists,
         unlock_deadline_ms: None,
-        device_id: g.device_id.clone().unwrap_or_else(|| "dev-unknown".into()),
+        device_id: "dev-removed".into(),
     }
 }

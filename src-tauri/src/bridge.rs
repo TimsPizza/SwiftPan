@@ -79,18 +79,19 @@ pub async fn backend_credentials_redacted() -> SpResult<RedactedCredentials> {
 
 // Save encrypted credentials (replaces vault_set_manual)
 #[tauri::command]
-pub async fn backend_set_credentials(
-    bundle: CredentialBundle,
-    master_password: String,
-) -> SpResult<()> {
+pub async fn backend_set_credentials(bundle: CredentialBundle) -> SpResult<()> {
     crate::logger::info("bridge", "backend_set_credentials called");
-    let r = SpBackend::set_with_plaintext(bundle, &master_password);
+    let r = SpBackend::set_with_plaintext(bundle);
     match &r {
         Ok(_) => crate::logger::info("bridge", "backend_set_credentials ok"),
         Err(e) => crate::logger::info(
             "bridge",
             &format!("backend_set_credentials err: {}", e.message),
         ),
+    }
+    // Invalidate cached R2 client when credentials are updated
+    if r.is_ok() {
+        crate::r2_client::invalidate_cached_client().await;
     }
     r
 }
@@ -101,19 +102,19 @@ pub async fn vault_status() -> SpResult<BackendStatus> {
     backend_status().await
 }
 #[tauri::command]
-pub async fn vault_set_manual(bundle: CredentialBundle, master_password: String) -> SpResult<()> {
-    backend_set_credentials(bundle, master_password).await
+pub async fn vault_set_manual(bundle: CredentialBundle) -> SpResult<()> {
+    backend_set_credentials(bundle).await
 }
 
 #[tauri::command]
 pub async fn r2_sanity_check() -> SpResult<()> {
-    crate::logger::debug("bridge", "r2_sanity_check");
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
-    let res = r2_client::sanity_check(&client, "swiftpan-selftest/").await;
+    let res = r2_client::sanity_check(&client).await;
     if let Err(e) = &res {
         crate::logger::error("bridge", &format!("r2_sanity_check error: {}", e.message));
     }
+    crate::logger::info("bridge", "r2_sanity_check returning");
     res
 }
 
@@ -167,7 +168,7 @@ pub async fn download_new(app: tauri::AppHandle, params: NewDownloadParams) -> S
     let r = crate::download::start_download(app, params).await;
     match &r {
         Ok(id) => crate::logger::info("bridge", &format!("download_new ok id={}", id)),
-        Err(e) => crate::logger::info("bridge", &format!("download_new err: {}", e.message)),
+        Err(e) => crate::logger::error("bridge", &format!("download_new err: {}", e.message)),
     }
     r
 }
@@ -280,21 +281,9 @@ pub async fn bg_mock_start(app: tauri::AppHandle) -> SpResult<()> {
 pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
-    let resp = client
-        .s3
-        .get_object()
-        .bucket(&client.bucket)
-        .key(&key)
-        .send()
+    let bytes = r2_client::get_object_bytes(&client, &key)
         .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("GetObject failed: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-    let mut body = resp.body.into_async_read();
+        .map(|(b, _)| b)?;
     let mut file = tokio::fs::File::create(&dest_path)
         .await
         .map_err(|e| SpError {
@@ -304,15 +293,13 @@ pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
-    let copied = tokio::io::copy(&mut body, &mut file)
-        .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("stream copy failed: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
+    file.write_all(&bytes).await.map_err(|e| SpError {
+        kind: ErrorKind::RetryableNet,
+        message: format!("write file: {e}"),
+        retry_after_ms: Some(300),
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     file.flush().await.ok();
     // Usage: B 类 GetObject +1；egress 计总拷贝字节
     let mut b = std::collections::HashMap::new();
@@ -321,7 +308,7 @@ pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
         class_a: Default::default(),
         class_b: b,
         ingress_bytes: 0,
-        egress_bytes: copied as u64,
+        egress_bytes: bytes.len() as u64,
         added_storage_bytes: 0,
         deleted_storage_bytes: 0,
     });
@@ -346,7 +333,20 @@ pub async fn list_objects(
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
     let p = prefix.unwrap_or_else(|| "".into());
-    let res = r2_client::list_objects(&client, &p, token, max_keys.unwrap_or(1000)).await;
+    let mut res =
+        r2_client::list_objects(&client, &p, token.clone(), max_keys.unwrap_or(1000)).await;
+    if let Err(e) = &res {
+        let msg = e.message.to_lowercase();
+        if msg.contains("unknownissuer") || msg.contains("invalid peer certificate") {
+            crate::logger::warn(
+                "bridge",
+                "list_objects TLS error; invalidating cached R2 client and retrying once",
+            );
+            r2_client::invalidate_cached_client().await;
+            let client2 = r2_client::build_client(&bundle.r2).await?;
+            res = r2_client::list_objects(&client2, &p, token, max_keys.unwrap_or(1000)).await;
+        }
+    }
     if let Err(e) = &res {
         crate::logger::error(
             "bridge",
@@ -364,7 +364,19 @@ pub async fn list_all_objects(max_total: Option<i32>) -> SpResult<Vec<crate::typ
     );
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
-    let res = r2_client::list_all_objects_flat(&client, max_total.unwrap_or(10_000)).await;
+    let mut res = r2_client::list_all_objects_flat(&client, max_total.unwrap_or(10_000)).await;
+    if let Err(e) = &res {
+        let msg = e.message.to_lowercase();
+        if msg.contains("unknownissuer") || msg.contains("invalid peer certificate") {
+            crate::logger::warn(
+                "bridge",
+                "list_all_objects TLS error; invalidating cached R2 client and retrying once",
+            );
+            r2_client::invalidate_cached_client().await;
+            let client2 = r2_client::build_client(&bundle.r2).await?;
+            res = r2_client::list_all_objects_flat(&client2, max_total.unwrap_or(10_000)).await;
+        }
+    }
     if let Err(e) = &res {
         crate::logger::error("bridge", &format!("list_all_objects error: {}", e.message));
     }

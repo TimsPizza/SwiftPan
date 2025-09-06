@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/Button";
 import { SettingsSchema, type SettingsFormValues } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
-import { useEffect, useState } from "react";
+import { mutations, queries } from "@/lib/api/tauriBridge";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 
 export default function SettingsPage() {
@@ -17,12 +17,13 @@ export default function SettingsPage() {
       secret_access_key: "",
       bucket: "",
       region: "auto",
-      device_id: "dev-local",
-      master_password: "",
     },
     mode: "onBlur",
   });
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{
+    msg: string;
+    isError: boolean;
+  } | null>(null);
   const [redacted, setRedacted] = useState<null | {
     endpoint: string;
     access_key_id: string;
@@ -31,25 +32,14 @@ export default function SettingsPage() {
     region?: string;
   }>(null);
 
-  const refreshStatus = async () => {
-    const r = await nv.backend_status();
-    r.match(
-      () => {},
-      (e) => setMsg(String((e as any)?.message || e)),
-    );
-    const rc = await nv.backend_credentials_redacted();
-    rc.match(
-      (ok) => setRedacted(ok),
-      () => setRedacted(null),
-    );
-  };
-
-  useEffect(() => {
-    refreshStatus();
-  }, []);
+  const statusQ = queries.useBackendStatus();
+  const credsQ = queries.useBackendCredentialsRedacted({
+    onSuccess: (ok) => setRedacted(ok),
+    onError: () => setRedacted(null),
+  });
 
   const save = handleSubmit(async (values) => {
-    setMsg(null);
+    setMsg({ msg: "", isError: false });
     // Validate with zod
     const parsed = SettingsSchema.safeParse(values);
     if (!parsed.success) {
@@ -68,35 +58,27 @@ export default function SettingsPage() {
         bucket: v.bucket,
         region: v.region,
       },
-      device_id: v.device_id,
-      created_at: Date.now(),
     };
-    const res = await nv.backend_set_credentials(bundle, v.master_password);
-    res.match(
-      async () => {
-        await refreshStatus();
-        setMsg("Saved");
-      },
-      (e) => {
-        setMsg(String((e as any)?.message || e));
-      },
-    );
+    await saveMutation.mutateAsync(bundle);
+    await Promise.all([statusQ.refetch(), credsQ.refetch()]);
+    setMsg({ msg: "Saved", isError: false });
   });
 
   // Unlock flow removed — vault has no lock semantics now
 
-  const sanity = async () => {
-    setMsg(null);
-    const res = await nv.r2_sanity_check();
-    res.match(
-      () => setMsg("R2 connectivity OK"),
-      (e) => {
-        // eslint-disable-next-line no-console
-        console.error("[ui] r2_sanity_check error", e);
-        setMsg(String((e as any)?.message || e));
-      },
-    );
-  };
+  const saveMutation = mutations.useSaveCredentials({
+    onError: (e: any) =>
+      setMsg({ msg: String(e?.message || e), isError: true }),
+  });
+
+  const sanityMutation = mutations.useR2Sanity({
+    onSuccess: () => setMsg({ msg: "R2 connectivity OK", isError: false }),
+    onError: (e: any) => {
+      // eslint-disable-next-line no-console
+      console.error("[ui] r2_sanity_check error", e);
+      setMsg({ msg: String(e?.message || e), isError: true });
+    },
+  });
 
   return (
     <div className="space-y-3">
@@ -176,42 +158,35 @@ export default function SettingsPage() {
           )}
         </div>
 
-        <label className="text-sm">Device ID</label>
-        <div>
-          <input
-            className="w-full rounded border px-2 py-1"
-            {...register("device_id")}
-          />
-          {errors.device_id && (
-            <div className="mt-1 text-xs text-red-600">
-              {errors.device_id.message}
-            </div>
-          )}
-        </div>
-
-        <label className="text-sm">Master Password</label>
-        <div>
-          <input
-            className="w-full rounded border px-2 py-1"
-            type="password"
-            {...register("master_password")}
-          />
-          {errors.master_password && (
-            <div className="mt-1 text-xs text-red-600">
-              {errors.master_password.message}
-            </div>
-          )}
-        </div>
+        {/* Device ID and Master Password removed */}
       </form>
       <div className="flex gap-2">
-        <Button type="submit" form="" onClick={save}>
-          Save Bundle
+        <Button
+          type="submit"
+          form=""
+          onClick={save}
+          disabled={saveMutation.isLoading}
+        >
+          {saveMutation.isLoading ? "Saving…" : "Save Bundle"}
         </Button>
-        <Button variant="outline" onClick={sanity}>
-          Test Connection
+        <Button
+          variant="outline"
+          onClick={() => sanityMutation.mutate()}
+          disabled={sanityMutation.isLoading}
+        >
+          {sanityMutation.isLoading ? "Testing…" : "Test Connection"}
         </Button>
       </div>
-      {msg && <div className="text-sm text-green-700">{msg}</div>}
+      {(statusQ.isLoading || credsQ.isLoading) && (
+        <div className="text-sm">Loading status…</div>
+      )}
+      {msg && (
+        <div
+          className={`text-sm ${msg.isError ? "text-red-600" : "text-green-700"}`}
+        >
+          {msg.msg}
+        </div>
+      )}
     </div>
   );
 }

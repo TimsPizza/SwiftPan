@@ -164,20 +164,13 @@ async fn run_download(
     let client = r2_client::build_client(&bundle.r2).await?;
 
     // Head to get size and etag
-    let head = client
-        .s3
-        .head_object()
-        .bucket(&client.bucket)
-        .key(key)
-        .send()
-        .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("HeadObject: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
+    let head = client.op.stat(key).await.map_err(|e| SpError {
+        kind: ErrorKind::RetryableNet,
+        message: format!("Stat: {e}"),
+        retry_after_ms: Some(500),
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     // Usage: B 类 HeadObject +1
     let mut b = std::collections::HashMap::new();
     b.insert("HeadObject".into(), 1u64);
@@ -190,12 +183,12 @@ async fn run_download(
         deleted_storage_bytes: 0,
     });
 
-    let total = head.content_length().map(|v| v as u64);
-    let etag = head.e_tag().map(|s| s.trim_matches('"').to_string());
+    let total = head.content_length();
+    let etag = head.etag().map(|s| s.to_string());
     {
         let mut g = DL.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(t) = g.get_mut(id) {
-            t.bytes_total = total;
+            t.bytes_total = Some(total);
             t.observed_etag = etag.clone();
         }
     }
@@ -230,9 +223,13 @@ async fn run_download(
             at: chrono::Utc::now().timestamp_millis(),
         })?;
 
+    // Chunked read with range to preserve progress and memory use
     let mut offset: u64 = 0;
-    let total_len = total.unwrap_or(0);
-    while cancelled.load(Ordering::Relaxed) == false {
+    let total_len_opt = Some(total); // Option<u64>
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
         while paused.load(Ordering::Relaxed) {
             emit_download(
                 app,
@@ -248,72 +245,65 @@ async fn run_download(
                 transfer_id: id.to_string(),
             },
         );
-        if total.is_some() && offset >= total_len {
-            break;
+        if let Some(total_len_v) = total_len_opt {
+            if offset >= total_len_v {
+                break;
+            }
         }
-        let end = if total.is_some() {
-            (offset + chunk - 1).min(total_len.saturating_sub(1))
+        let end = if let Some(total_len_v) = total_len_opt {
+            (offset + chunk - 1).min(total_len_v.saturating_sub(1))
         } else {
             offset + chunk - 1
         };
-        let range = if total.is_some() {
-            format!("bytes={}-{}", offset, end)
-        } else {
-            format!("bytes={}-{}", offset, offset + chunk - 1)
-        };
-        let mut get = client
-            .s3
-            .get_object()
-            .bucket(&client.bucket)
-            .key(key)
-            .range(range);
-        if let Some(exp) = expected_etag.clone() {
-            get = get.if_match(exp);
-        }
-        let get = get.send().await.map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("GetObject: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        let mut body = get.body.into_async_read();
-        let copied = tokio::io::copy(&mut body, &mut file)
+        let range_start = offset;
+        let data = client
+            .op
+            .read_with(key)
+            .range(range_start..(end + 1))
             .await
             .map_err(|e| SpError {
                 kind: ErrorKind::RetryableNet,
-                message: format!("copy: {e}"),
-                retry_after_ms: Some(300),
+                message: format!("GetObject range: {e}"),
+                retry_after_ms: Some(500),
                 context: None,
                 at: chrono::Utc::now().timestamp_millis(),
             })?;
-        // Usage: B 类 GetObject +1；egress 计本次 copied 字节
+        if data.is_empty() {
+            break;
+        }
+        let chunk: bytes::Bytes = data.to_bytes();
+        file.write_all(&chunk).await.map_err(|e| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("write: {e}"),
+            retry_after_ms: Some(300),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        // Usage: B 类 GetObject +1；egress 计本次字节
         let mut b = std::collections::HashMap::new();
         b.insert("GetObject".into(), 1u64);
         let _ = UsageSync::record_local_delta(UsageDelta {
             class_a: Default::default(),
             class_b: b,
             ingress_bytes: 0,
-            egress_bytes: copied as u64,
+            egress_bytes: data.len() as u64,
             added_storage_bytes: 0,
             deleted_storage_bytes: 0,
         });
-        offset = offset.saturating_add(copied as u64);
+        offset = offset.saturating_add(chunk.len() as u64);
         emit_download(
             app,
             &DownloadEvent::ChunkDone {
                 transfer_id: id.to_string(),
-                range_start: offset.saturating_sub(copied as u64),
-                len: copied as u64,
+                range_start,
+                len: chunk.len() as u64,
             },
         );
-        {
-            let mut g = DL.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(t) = g.get_mut(id) {
-                t.bytes_done = offset;
-            }
+        let mut g = DL.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(t) = g.get_mut(id) {
+            t.bytes_done = offset;
         }
-        if total.is_none() && copied == 0 {
+        if total_len_opt.is_none() && data.is_empty() {
             break;
         }
     }

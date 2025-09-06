@@ -170,94 +170,18 @@ async fn run_upload(
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     })?;
-    let size = meta.len();
+    let _size = meta.len();
 
-    if size <= params.part_size {
-        // Single PUT
-        let mut buf = Vec::with_capacity(size as usize);
-        file.read_to_end(&mut buf).await.map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("read src: {e}"),
-            retry_after_ms: Some(200),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        let mut req = client
-            .s3
-            .put_object()
-            .bucket(&client.bucket)
-            .key(&params.key)
-            .body(aws_sdk_s3::primitives::ByteStream::from(buf));
-        if let Some(ct) = params.content_type.clone() {
-            req = req.content_type(ct);
-        }
-        if let Some(cd) = params.content_disposition.clone() {
-            req = req.content_disposition(cd);
-        }
-        let send_res = req.send().await.map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("PutObject: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(t) = g.get_mut(id) {
-            t.bytes_done = size;
-            t.parts_completed = 1;
-        }
-        let _ = send_res; // suppress unused
-        emit_upload(
-            app,
-            &UploadEvent::PartDone {
-                transfer_id: id.to_string(),
-                part_number: 1,
-                etag: String::from(""),
-            },
-        );
-        // Usage: A 类 PutObject +1；按写入大小计 ingress
-        let mut a = std::collections::HashMap::new();
-        a.insert("PutObject".into(), 1u64);
-        let _ = UsageSync::record_local_delta(UsageDelta {
-            class_a: a,
-            class_b: Default::default(),
-            ingress_bytes: size,
-            egress_bytes: 0,
-            added_storage_bytes: size,
-            deleted_storage_bytes: 0,
-        });
-        emit_upload(
-            app,
-            &UploadEvent::Completed {
-                transfer_id: id.to_string(),
-            },
-        );
-        return Ok(());
-    }
-
-    // Multipart upload
-    let mut create = client
-        .s3
-        .create_multipart_upload()
-        .bucket(&client.bucket)
-        .key(&params.key);
-    if let Some(ct) = params.content_type.clone() {
-        create = create.content_type(ct);
-    }
-    if let Some(cd) = params.content_disposition.clone() {
-        create = create.content_disposition(cd);
-    }
-    let created = create.send().await.map_err(|e| SpError {
+    // Streaming upload via OpenDAL writer
+    let mut writer = client.op.writer(&params.key).await.map_err(|e| SpError {
         kind: ErrorKind::RetryableNet,
-        message: format!("CreateMultipartUpload: {e}"),
+        message: format!("open writer: {e}"),
         retry_after_ms: Some(500),
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     })?;
-    let upload_id = created.upload_id().unwrap_or_default().to_string();
 
-    let mut part_number: i32 = 1;
-    let mut completed_parts: Vec<aws_sdk_s3::types::CompletedPart> = vec![];
+    let mut part_number: u32 = 1;
     loop {
         if cancelled.load(Ordering::Relaxed) {
             break;
@@ -289,30 +213,14 @@ async fn run_upload(
             break;
         }
         buf.truncate(n);
-        let out = client
-            .s3
-            .upload_part()
-            .bucket(&client.bucket)
-            .key(&params.key)
-            .upload_id(&upload_id)
-            .part_number(part_number)
-            .body(aws_sdk_s3::primitives::ByteStream::from(buf))
-            .send()
-            .await
-            .map_err(|e| SpError {
-                kind: ErrorKind::RetryableNet,
-                message: format!("UploadPart#{part_number}: {e}"),
-                retry_after_ms: Some(500),
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-        let etag = out.e_tag().map(|s| s.to_string()).unwrap_or_default();
-        completed_parts.push(
-            aws_sdk_s3::types::CompletedPart::builder()
-                .e_tag(etag.clone())
-                .part_number(part_number)
-                .build(),
-        );
+        writer.write(buf).await.map_err(|e| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("writer write: {e}"),
+            retry_after_ms: Some(300),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+
         {
             let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(t) = g.get_mut(id) {
@@ -322,10 +230,20 @@ async fn run_upload(
         }
         emit_upload(
             app,
+            &UploadEvent::PartProgress {
+                transfer_id: id.to_string(),
+                progress: crate::types::UploadPartProgress {
+                    part_number,
+                    bytes_transferred: n as u64,
+                },
+            },
+        );
+        emit_upload(
+            app,
             &UploadEvent::PartDone {
                 transfer_id: id.to_string(),
-                part_number: part_number as u32,
-                etag: etag.clone(),
+                part_number,
+                etag: String::new(),
             },
         );
         // Usage: B 类 UploadPart +1；按分片大小计 ingress
@@ -343,14 +261,8 @@ async fn run_upload(
     }
 
     if cancelled.load(Ordering::Relaxed) {
-        let _ = client
-            .s3
-            .abort_multipart_upload()
-            .bucket(&client.bucket)
-            .key(&params.key)
-            .upload_id(upload_id)
-            .send()
-            .await;
+        let _ = writer.close().await;
+        let _ = client.op.delete(&params.key).await;
         emit_upload(
             app,
             &UploadEvent::Failed {
@@ -373,27 +285,15 @@ async fn run_upload(
         });
     }
 
-    // Complete
-    let comp = aws_sdk_s3::types::CompletedMultipartUpload::builder()
-        .set_parts(Some(completed_parts))
-        .build();
-    client
-        .s3
-        .complete_multipart_upload()
-        .bucket(&client.bucket)
-        .key(&params.key)
-        .upload_id(upload_id)
-        .multipart_upload(comp)
-        .send()
-        .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("CompleteMultipartUpload: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-    // Usage: A 类 CompleteMultipartUpload +1
+    // Complete writer
+    writer.close().await.map_err(|e| SpError {
+        kind: ErrorKind::RetryableNet,
+        message: format!("writer close: {e}"),
+        retry_after_ms: Some(300),
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    // Usage: A 类 CompleteMultipartUpload +1 (semantic)
     let mut a = std::collections::HashMap::new();
     a.insert("CompleteMultipartUpload".into(), 1u64);
     let _ = UsageSync::record_local_delta(UsageDelta {

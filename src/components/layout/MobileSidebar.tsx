@@ -26,7 +26,10 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
   ];
 
   return (
-    <div className="text-foreground bg-background flex h-full w-[224px] flex-col py-3 pr-3">
+    <div
+      id="mobile-sidebar-container"
+      className="text-foreground bg-background flex h-full w-[224px] flex-col py-3 pr-3"
+    >
       <div className="mb-3 flex items-center gap-2 px-1">
         <DashboardIcon className="h-5 w-5" />
         <h2 className="text-base font-semibold tracking-tight">Menu</h2>

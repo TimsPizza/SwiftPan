@@ -4,7 +4,13 @@ import type {
   UploadEvent,
   UploadStatus,
 } from "@/lib/api/bridge";
-import { nv, onDownloadEvent, onUploadEvent } from "@/lib/api/tauriBridge";
+import {
+  nv,
+  onDownloadEvent,
+  onLogEvent,
+  onUploadEvent,
+} from "@/lib/api/tauriBridge";
+import { useLogStore } from "@/store/log-store";
 import { useTransferStore } from "@/store/transfer-store";
 import { useEffect } from "react";
 
@@ -200,6 +206,24 @@ async function ensureBridgeOnce() {
 
   // Subscribe once
   try {
+    const unLog = await onLogEvent((payload) => {
+      console.log("log evt: ", payload);
+      const p = payload as any;
+      const e = p && typeof p === "object" ? p : null;
+      if (!e) return;
+      useLogStore.getState().append({
+        ts: String(e.ts || ""),
+        level: String(e.level || ""),
+        target: String(e.target || ""),
+        message: String(e.message || e.line || ""),
+        line: String(e.line || ""),
+      });
+    });
+    // @ts-ignore add dynamic property to store unlisten
+    ctrl.unlistenLog = unLog;
+  } catch {}
+
+  try {
     const unUpload = await onUploadEvent((payload) => {
       console.log("event upload", payload);
       // Defensive parsing
@@ -252,6 +276,14 @@ async function ensureBridgeOnce() {
       }
     }
   }
+
+  // Seed logger status and initial tail once
+  try {
+    const st = await nv.log_get_status().unwrapOr(undefined as any);
+    if (st) useLogStore.getState().setStatus(st as any);
+    const tail = await nv.log_tail(400).unwrapOr("");
+    if (tail) useLogStore.getState().setAll(String(tail).split("\n"));
+  } catch {}
 
   // Poll active transfers periodically to stay in sync (idempotent)
   ctrl.poller = window.setInterval(async () => {

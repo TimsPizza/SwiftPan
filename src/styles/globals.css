@@ -1,6 +1,19 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+:root {
+  --safe-top: env(safe-area-inset-top, 0px) !important;
+}
+
+body {
+  padding-top: max(var(--safe-top), 24px) !important;
+}
+
+#mobile-sidebar-container #sidebar-container {
+  padding-top: max(var(--safe-top), 24px) !important;
+}
+
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

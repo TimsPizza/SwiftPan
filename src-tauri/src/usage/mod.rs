@@ -1,10 +1,12 @@
 use crate::types::*;
 use crate::{r2_client, sp_backend::SpBackend};
 use chrono::Datelike;
-use directories::ProjectDirs;
+// use directories::ProjectDirs;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use tokio::sync::Mutex as AsyncMutex;
 
 pub struct UsageSync;
 
@@ -64,6 +66,9 @@ impl UsageSync {
     }
 
     pub async fn merge_and_write_day(date: &str) -> SpResult<DailyLedger> {
+        // Serialize merges to avoid concurrent duplicate writes
+        static MERGE_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
+        let _guard = MERGE_LOCK.lock().await;
         // Fast-path: if already merged today, skip R2 ops entirely
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         if date == today {
@@ -199,33 +204,22 @@ impl UsageSync {
         let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
         let client = r2_client::build_client(&bundle.r2).await?;
 
-        // List existing objects for this month
+        // List existing objects for this month via OpenDAL
         let list_prefix = format!("{}{}-", ANALYTICS_PREFIX, prefix);
-        let resp = client
-            .s3
-            .list_objects_v2()
-            .bucket(&client.bucket)
-            .prefix(&list_prefix)
-            .max_keys(64)
-            .send()
-            .await
-            .map_err(|e| SpError {
-                kind: ErrorKind::RetryableNet,
-                message: format!("ListObjectsV2 (usage month) failed: {e}"),
-                retry_after_ms: Some(500),
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-
         let mut days_present: Vec<u32> = vec![];
-        for o in resp.contents() {
-            if let Some(key) = o.key() {
-                // Expect analytics/daily/YYYY-MM-DD.json
-                if let Some(day_str) = key.strip_prefix(&list_prefix) {
-                    if let Some(day_part) = day_str.strip_suffix(".json") {
-                        if let Ok(d) = day_part.parse::<u32>() {
-                            days_present.push(d);
-                        }
+        let l = client.op.list(&list_prefix).await.map_err(|e| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("list (usage month): {e}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        for e in l.into_iter() {
+            let key = e.path().to_string();
+            if let Some(day_str) = key.strip_prefix(&list_prefix) {
+                if let Some(day_part) = day_str.strip_suffix(".json") {
+                    if let Ok(d) = day_part.parse::<u32>() {
+                        days_present.push(d);
                     }
                 }
             }
@@ -447,33 +441,22 @@ fn prev_month_last_day(date: &str) -> Option<String> {
 }
 
 async fn compute_bucket_total_storage(client: &crate::r2_client::R2Client) -> SpResult<u64> {
-    // List all objects and sum sizes; paginate until done
-    let mut token: Option<String> = None;
     let mut total: u64 = 0;
-    loop {
-        let mut req = client
-            .s3
-            .list_objects_v2()
-            .bucket(&client.bucket)
-            .max_keys(1000);
-        if let Some(t) = token.clone() {
-            req = req.continuation_token(t);
+    let l = client.op.list("").await.map_err(|e| SpError {
+        kind: ErrorKind::RetryableNet,
+        message: format!("list (total storage): {e}"),
+        retry_after_ms: Some(500),
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    for e in l.into_iter() {
+        let path = e.path();
+        if path.ends_with('/') {
+            continue;
         }
-        let out = req.send().await.map_err(|e| SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("ListObjectsV2 (total storage): {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        for o in out.contents() {
-            if let Some(sz) = o.size() {
-                total = total.saturating_add(sz as u64);
-            }
-        }
-        token = out.next_continuation_token().map(|s| s.to_string());
-        if token.is_none() {
-            break;
+        if let Ok(meta) = client.op.stat(path).await {
+            let sz = meta.content_length();
+            total = total.saturating_add(sz);
         }
     }
     Ok(total)

@@ -1,42 +1,38 @@
 import GlobalError from "@/components/fallback/GlobalError";
 import { FileList } from "@/components/features/FileList";
 import { FileItem } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
+import { queries } from "@/lib/api/tauriBridge";
 import { useEffect, useState } from "react";
 
 export default function FilesPage() {
   const [files, setFiles] = useState<FileItem[]>([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      setError(null);
-      const r = await nv.list_all_objects(10000);
-      r.match(
-        (ok) => {
-          // adapt to FileList schema
-          const mapped = (ok || [])
-            .filter((it) => !it.is_prefix)
-            .map((it) => ({
-              id: it.key,
-              filename: it.key.split("/").pop() || it.key,
-              size: it.size ?? 0,
-              mimeType: "unknown",
-              uploadedAt: it.last_modified_ms ?? Date.now(),
-              originalName: it.key,
-            }));
-          setFiles(mapped);
-        },
-        (e) => setError(String((e as any)?.message || e)),
-      );
-      setLoading(false);
-    })();
-  }, []);
+  const { data, isLoading, isError, refetch } =
+    queries.useListAllObjects(10000);
 
-  if (loading) return <div className="p-4 text-sm">Loading…</div>;
-  if (error) {
+  useEffect(() => {
+    if (!data) return;
+    try {
+      const mapped = (data || [])
+        .filter((it: any) => !it.is_prefix)
+        .map((it: any) => ({
+          id: it.key,
+          filename: it.key.split("/").pop() || it.key,
+          size: it.size ?? 0,
+          mimeType: "unknown",
+          uploadedAt: it.last_modified_ms ?? Date.now(),
+          originalName: it.key,
+        }));
+      setFiles(mapped);
+      setError(null);
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    }
+  }, [data]);
+
+  if (isLoading) return <div className="p-4 text-sm">Loading…</div>;
+  if (isError || error) {
     const msg = String(error || "");
     const isUninit = /credentials|not.*found|uninitialized|backend|vault/i.test(
       msg,
@@ -54,7 +50,7 @@ export default function FilesPage() {
           isUninit ? () => (window.location.href = "/settings") : undefined
         }
         secondaryLabel={isUninit ? "Retry" : undefined}
-        onSecondary={isUninit ? () => window.location.reload() : undefined}
+        onSecondary={isUninit ? () => void refetch() : undefined}
       />
     );
   }

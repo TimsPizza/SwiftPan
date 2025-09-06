@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ResultAsync } from "neverthrow";
+import {
+  useMutation,
+  UseMutationOptions,
+  useQuery,
+  UseQueryOptions,
+} from "react-query";
 import type { DailyLedger, ShareLink, UploadStatus } from "./bridge";
 
 export type ListPage = {
@@ -27,6 +33,9 @@ export function onDownloadEvent(cb: (event: unknown) => void) {
 }
 export function onBackgroundStats(cb: (event: unknown) => void) {
   return listen("sp://background_stats", (e) => cb(e.payload));
+}
+export function onLogEvent(cb: (event: unknown) => void) {
+  return listen("sp://log_event", (e) => cb(e.payload));
 }
 
 export async function bg_mock_start() {
@@ -66,10 +75,9 @@ function resultInvoke<T = unknown>(
 }
 
 export const nv = {
-  backend_set_credentials: (bundle: unknown, masterPassword: string) =>
+  backend_set_credentials: (bundle: unknown) =>
     resultInvoke<void>("backend_set_credentials", {
       bundle,
-      masterPassword,
     }),
   backend_status: () => resultInvoke("backend_status"),
   backend_credentials_redacted: () =>
@@ -80,10 +88,9 @@ export const nv = {
       bucket: string;
       region?: string;
     }>("backend_credentials_redacted"),
-  vault_set_manual: (bundle: unknown, masterPassword: string) =>
+  vault_set_manual: (bundle: unknown) =>
     resultInvoke<void>("vault_set_manual", {
       bundle,
-      masterPassword,
     }),
   vault_status: () => resultInvoke("vault_status"),
   r2_sanity_check: () => resultInvoke("r2_sanity_check"),
@@ -178,4 +185,84 @@ export const nv = {
   log_clear: () => resultInvoke<void>("log_clear"),
   log_set_level: (level: "trace" | "debug" | "info" | "warn" | "error") =>
     resultInvoke<void>("log_set_level", { level }),
+  log_get_status: () =>
+    resultInvoke<{
+      level: string;
+      cache_lines: number;
+      file_path: string;
+      file_size_bytes: number;
+    }>("log_get_status"),
+};
+
+// React Query wrappers (minimal, non-breaking)
+export const queries = {
+  useListAllObjects: (
+    maxTotal = 10000,
+    opts?: UseQueryOptions<any, unknown, any, any>,
+  ) =>
+    useQuery({
+      queryKey: ["list_all_objects", maxTotal],
+      queryFn: async () => (await nv.list_all_objects(maxTotal)).unwrapOr([]),
+      ...opts,
+    }),
+  useBackendStatus: (opts?: UseQueryOptions<any>) =>
+    useQuery({
+      queryKey: ["backend_status"],
+      queryFn: async () => (await nv.backend_status()).unwrapOr({}),
+      staleTime: 10_000,
+      ...opts,
+    }),
+  useBackendCredentialsRedacted: (opts?: UseQueryOptions<any>) =>
+    useQuery({
+      queryKey: ["backend_credentials_redacted"],
+      queryFn: async () =>
+        (await nv.backend_credentials_redacted()).unwrapOr(null),
+      ...opts,
+    }),
+  useUsageListMonth: (prefix: string, opts?: UseQueryOptions<any>) =>
+    useQuery({
+      queryKey: ["usage_list_month", prefix],
+      queryFn: async () => (await nv.usage_list_month(prefix)).unwrapOr([]),
+      ...opts,
+    }),
+  useUsageMonthCost: (prefix: string, opts?: UseQueryOptions<any>) =>
+    useQuery({
+      queryKey: ["usage_month_cost", prefix],
+      queryFn: async () => (await nv.usage_month_cost(prefix)).unwrapOr(null),
+      ...opts,
+    }),
+  useLogStatus: (opts?: UseQueryOptions<any>) =>
+    useQuery({
+      queryKey: ["log_status"],
+      queryFn: async () => (await nv.log_get_status()).unwrapOr(null),
+      refetchInterval: 10_000,
+      ...opts,
+    }),
+};
+
+export const mutations = {
+  useSaveCredentials: (opts?: UseMutationOptions<void, unknown, any>) =>
+    useMutation({
+      mutationFn: async (bundle: any) => {
+        await await nv.backend_set_credentials(bundle).unwrapOr(undefined);
+      },
+      ...opts,
+    }),
+  useR2Sanity: (opts?: UseMutationOptions<void, unknown, void>) =>
+    useMutation({
+      mutationFn: async () => {
+        const r = await nv.r2_sanity_check();
+        if (r.isErr()) {
+          throw r.error;
+        }
+      },
+      ...opts,
+    }),
+  useUsageMergeDay: (opts?: UseMutationOptions<void, unknown, string>) =>
+    useMutation({
+      mutationFn: async (date: string) => {
+        await (await nv.usage_merge_day(date)).unwrapOr(undefined);
+      },
+      ...opts,
+    }),
 };

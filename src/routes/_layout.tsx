@@ -19,13 +19,13 @@ export function AppRoot() {
     <QueryClientProvider client={queryClient}>
       <HelmetProvider>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <div className="bg-background flex h-screen w-full">
+          <div className="bg-background flex h-screen w-full overflow-y-hidden">
             {/* Sidebar: hidden on small screens, visible from md up */}
             <div className="hidden md:!block">
               <Sidebar />
             </div>
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-              {/* Mobile navbar */}
+              {/* Mobile header */}
               <div className="relative flex w-full items-center justify-between border-b px-4 py-2 md:hidden">
                 <button
                   aria-label="Open sidebar"
@@ -34,7 +34,7 @@ export function AppRoot() {
                 >
                   <MenuIcon />
                 </button>
-                <div className="absolute top-1/2 right-1/2 mx-auto translate-x-1/2 -translate-y-1/2 text-sm font-semibold">
+                <div className="text-md sticky top-1/2 right-1/2 mx-auto translate-x-1/2 -translate-y-1/2 font-semibold">
                   SwiftPan
                 </div>
                 <div />

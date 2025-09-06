@@ -6,6 +6,7 @@ pub fn run() {
             crate::logger::log_tail,
             crate::logger::log_clear,
             crate::logger::log_set_level,
+            crate::logger::log_get_status,
             crate::bridge::backend_status,
             crate::bridge::backend_credentials_redacted,
             crate::bridge::backend_set_credentials,
@@ -38,6 +39,21 @@ pub fn run() {
                     format!("logger init failed: {}", e.message),
                 ))
             })?;
+            // Pre-build a global R2 client if credentials are available, in background.
+            tauri::async_runtime::spawn(async move {
+                if let Ok(bundle) = crate::sp_backend::SpBackend::get_decrypted_bundle_if_unlocked() {
+                    crate::logger::info("app", "prebuilding R2 client at startup");
+                    // Soft timeout so app doesn't stall if construction hangs
+                    let build = crate::r2_client::build_client(&bundle.r2);
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), build).await {
+                        Ok(Ok(_)) => crate::logger::info("app", "prebuild R2 client ok"),
+                        Ok(Err(e)) => crate::logger::error("app", &format!("prebuild R2 client error: {}", e.message)),
+                        Err(_) => crate::logger::error("app", "prebuild R2 client timed out"),
+                    }
+                } else {
+                    crate::logger::info("app", "no unlocked credentials at startup; skip prebuild");
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())

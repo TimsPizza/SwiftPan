@@ -4,7 +4,7 @@ import GlobalError from "@/components/fallback/GlobalError";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { nv } from "@/lib/api/tauriBridge";
+import { mutations, queries } from "@/lib/api/tauriBridge";
 import { useEffect, useMemo, useState } from "react";
 
 export default function UsagePage() {
@@ -12,11 +12,8 @@ export default function UsagePage() {
     new Date().toISOString().slice(0, 7),
   );
   const [items, setItems] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cost, setCost] = useState<any | null>(null);
-  const [costLoading, setCostLoading] = useState(false);
-  const [costError, setCostError] = useState<string | null>(null);
 
   const trafficPoints = useMemo(
     () =>
@@ -28,45 +25,29 @@ export default function UsagePage() {
     [items],
   );
 
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    const res = await nv.usage_list_month(month);
-    res.match(
-      (ok) => setItems(ok),
-      (e) => setError(String((e as any)?.message || e)),
-    );
-    setLoading(false);
-  };
-
-  const loadCost = async () => {
-    setCostLoading(true);
-    setCostError(null);
-    const res = await nv.usage_month_cost(month);
-    res.match(
-      (ok) => setCost(ok),
-      (e) => setCostError(String((e as any)?.message || e)),
-    );
-    setCostLoading(false);
-  };
+  const usageQ = queries.useUsageListMonth(month, {
+    onSuccess: (ok) => setItems(ok as any[]),
+    onError: (e: any) => setError(String(e?.message || e)),
+  });
+  const costQ = queries.useUsageMonthCost(month, {
+    onSuccess: (ok) => setCost(ok),
+    onError: (e: any) => setError(String(e?.message || e)),
+  });
 
   useEffect(() => {
     // Auto merge today's deltas; backend will no-op if already merged today
-    (async () => {
-      const today = new Date().toISOString().slice(0, 10);
-      await nv.usage_merge_day(today);
-      await Promise.all([load(), loadCost()]);
-    })();
+    const today = new Date().toISOString().slice(0, 10);
+    mergeMutation.mutate(today, {
+      onSettled: () => {
+        void Promise.all([usageQ.refetch(), costQ.refetch()]);
+      },
+    });
   }, [month]);
 
-  const mergeToday = async () => {
-    const today = new Date().toISOString().slice(0, 10);
-    const r = await nv.usage_merge_day(today);
-    r.match(
-      () => load(),
-      (e) => setError(String((e as any)?.message || e)),
-    );
-  };
+  const mergeMutation = mutations.useUsageMergeDay({
+    onError: (e: any) => setError(String(e?.message || e)),
+    onSuccess: () => usageQ.refetch(),
+  });
 
   if (error) {
     const msg = String(error || "");
@@ -106,26 +87,24 @@ export default function UsagePage() {
               className="border-input bg-background ring-offset-background focus-visible:ring-ring placeholder:text-muted-foreground flex h-9 w-fit rounded-md border px-3 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
             />
             <Button
-              onClick={() => Promise.all([load(), loadCost()])}
-              disabled={loading || costLoading}
+              onClick={() => Promise.all([usageQ.refetch(), costQ.refetch()])}
+              disabled={usageQ.isLoading || costQ.isLoading}
             >
               Refresh
             </Button>
             <Button
               variant="outline"
-              onClick={async () => {
-                await mergeToday();
-                await loadCost();
-              }}
+              onClick={() =>
+                mergeMutation.mutate(new Date().toISOString().slice(0, 10))
+              }
+              disabled={mergeMutation.isLoading}
             >
-              Merge Today
+              {mergeMutation.isLoading ? "Merging…" : "Merge Today"}
             </Button>
-            {(loading || costLoading) && (
+            {(usageQ.isLoading || costQ.isLoading) && (
               <span className="text-sm">Loading…</span>
             )}
-            {(error || costError) && (
-              <span className="text-sm text-red-600">{error || costError}</span>
-            )}
+            {error && <span className="text-sm text-red-600">{error}</span>}
           </div>
           {cost && (
             <div className="grid grid-cols-1 gap-4">

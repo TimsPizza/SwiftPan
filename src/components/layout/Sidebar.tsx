@@ -26,7 +26,10 @@ export const Sidebar = () => {
   ];
 
   return (
-    <div className="bg-sidebar text-sidebar-foreground border-sidebar-border flex h-full w-56 flex-col border-r p-4">
+    <div
+      id="sidebar-container"
+      className="bg-sidebar text-sidebar-foreground border-sidebar-border flex h-full w-56 flex-col border-r p-4"
+    >
       <div className="flex min-h-0 flex-1 flex-col gap-2">
         <div className="mb-4 flex items-center gap-2 px-2">
           <DashboardIcon className="text-sidebar-primary h-5 w-5" />
