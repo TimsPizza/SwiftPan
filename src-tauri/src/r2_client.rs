@@ -199,7 +199,7 @@ pub async fn presign_get_url(
     ttl_secs: u64,
     download_filename: Option<String>,
 ) -> SpResult<(String, i64)> {
-    let mut url = client
+    let url = client
         .op
         .presign_read(key, Duration::from_secs(ttl_secs))
         .await
@@ -418,7 +418,7 @@ pub async fn put_object_bytes(
     if_match: Option<String>,
     if_none_match: bool,
 ) -> SpResult<()> {
-    let write_len = bytes.len() as u64;
+    // let write_len = bytes.len() as u64; // tracked at HTTP layer; unused here
     let _ = (if_match, if_none_match); // not supported with OpenDAL write
     client.op.write(key, bytes).await.map_err(|e| {
         crate::logger::error("r2", &format!("PutObject error: {}", e));

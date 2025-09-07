@@ -4,7 +4,7 @@ use futures::TryStreamExt;
 use opendal::raw::{HttpBody, HttpFetch, MaybeSend};
 use opendal::{Buffer, Error, ErrorKind as OdErrorKind, Result as OdResult};
 use std::future;
-use std::sync::atomic::{AtomicBool, Ordering};
+// (no atomic state used here)
 
 // Always-on instrumentation: no runtime toggle.
 

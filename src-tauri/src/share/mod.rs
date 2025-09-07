@@ -48,7 +48,7 @@ async fn load_ledger(client: &crate::r2_client::R2Client, force_refresh: bool) -
         if let Ok(p) = cache_path() {
             if p.exists() {
                 if let Ok(bytes) = fs::read(&p) {
-                    if let Ok(mut v) = serde_json::from_slice::<ShareLedger>(&bytes) {
+                    if let Ok(v) = serde_json::from_slice::<ShareLedger>(&bytes) {
                         let age = now_ms().saturating_sub(v.updated_at_ms);
                         if age < 24 * 60 * 60 * 1000 {
                             return Ok(v);

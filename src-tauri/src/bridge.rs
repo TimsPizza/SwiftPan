@@ -27,9 +27,35 @@ pub async fn android_pick_download_dir(app: tauri::AppHandle) -> SpResult<String
         use tauri_plugin_android_fs::AndroidFsExt as _;
 
         let api = app.android_fs();
-        let tree_uri = api.show_open_document_tree().await.map_err(|e| SpError {
+        let picker = api.file_picker();
+        let picked = picker.pick_dir(None).map_err(|e| SpError {
             kind: ErrorKind::NotRetriable,
-            message: format!("show_open_document_tree failed: {e}"),
+            message: format!("pick_dir failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        let Some(dir_uri) = picked else {
+            return Err(SpError {
+                kind: ErrorKind::Cancelled,
+                message: "user cancelled dir selection".into(),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            });
+        };
+        // Persist URI permission for long-term use
+        api.take_persistable_uri_permission(&dir_uri).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("take_persistable_uri_permission: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        // Serialize FileUri to string for storage
+        let tree_uri = dir_uri.to_string().map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("serialize FileUri: {e}"),
             retry_after_ms: None,
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
@@ -40,7 +66,7 @@ pub async fn android_pick_download_dir(app: tauri::AppHandle) -> SpResult<String
         settings.android_tree_uri = Some(tree_uri.clone());
         crate::settings::set(settings).map_err(|e| SpError {
             kind: ErrorKind::NotRetriable,
-            message: format!("save tree_uri to settings failed: {e}"),
+            message: format!("save tree_uri to settings failed: {}", e.message),
             retry_after_ms: None,
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
@@ -81,7 +107,6 @@ pub async fn android_copy_from_path_to_tree(
     #[cfg(target_os = "android")]
     {
         use std::io::{BufReader, Read, Write};
-        use std::str::FromStr;
 
         let api = app.android_fs();
         let base = FileUri::from_str(&params.tree_uri).map_err(|e| SpError {
@@ -653,7 +678,7 @@ pub async fn ui_status_bar_height() -> SpResult<i32> {
             let vm = JavaVM::from_raw(vm_ptr as *mut _)
                 .map_err(|_| ())
                 .unwrap_or_else(|_| unreachable!());
-            let env = match vm.attach_current_thread() {
+            let mut env = match vm.attach_current_thread() {
                 Ok(e) => e,
                 Err(_) => return Ok(0),
             };
@@ -681,7 +706,7 @@ pub async fn ui_status_bar_height() -> SpResult<i32> {
                 .is_instance_of(&context, "android/app/Activity")
                 .unwrap_or(false);
             if !is_activity {
-                return Ok(status_bar_dimen_fallback(&env, &context)); // 兜底
+                return Ok(status_bar_dimen_fallback(&mut env, &context)); // 兜底
             }
             let activity = context;
 
@@ -690,7 +715,7 @@ pub async fn ui_status_bar_height() -> SpResult<i32> {
                 .ok()
                 .and_then(|v| v.l().ok());
             let Some(window) = window else {
-                return Ok(status_bar_dimen_fallback(&env, &activity));
+                return Ok(status_bar_dimen_fallback(&mut env, &activity));
             };
 
             let decor = env
@@ -698,7 +723,7 @@ pub async fn ui_status_bar_height() -> SpResult<i32> {
                 .ok()
                 .and_then(|v| v.l().ok());
             let Some(decor) = decor else {
-                return Ok(status_bar_dimen_fallback(&env, &activity));
+                return Ok(status_bar_dimen_fallback(&mut env, &activity));
             };
 
             let insets = env
@@ -711,20 +736,25 @@ pub async fn ui_status_bar_height() -> SpResult<i32> {
                 .ok()
                 .and_then(|v| v.l().ok());
             let Some(insets) = insets else {
-                return Ok(status_bar_dimen_fallback(&env, &activity));
+                return Ok(status_bar_dimen_fallback(&mut env, &activity));
             };
 
             // API >= 30：WindowInsets.getInsets(Type.statusBars|displayCutout).top
             if sdk_int >= 30 {
                 let type_cls: JClass = match env.find_class("android/view/WindowInsets$Type") {
                     Ok(c) => c,
-                    Err(_) => return Ok(status_bar_dimen_fallback(&env, &activity)),
+                    Err(_) => return Ok(status_bar_dimen_fallback(&mut env, &activity)),
                 };
                 let sb = env
                     .call_static_method(type_cls, "statusBars", "()I", &[])
                     .ok()
                     .and_then(|v| v.i().ok())
                     .unwrap_or(0);
+                // `JClass` is not Copy; re-find the class for the next call
+                let type_cls: JClass = match env.find_class("android/view/WindowInsets$Type") {
+                    Ok(c) => c,
+                    Err(_) => return Ok(status_bar_dimen_fallback(&mut env, &activity)),
+                };
                 let dc = env
                     .call_static_method(type_cls, "displayCutout", "()I", &[])
                     .ok()
@@ -749,7 +779,7 @@ pub async fn ui_status_bar_height() -> SpResult<i32> {
                         .unwrap_or(0);
                     return Ok(top.max(0));
                 }
-                return Ok(status_bar_dimen_fallback(&env, &activity));
+                return Ok(status_bar_dimen_fallback(&mut env, &activity));
             }
 
             // 23..=29：getSystemWindowInsetTop()
@@ -762,16 +792,16 @@ pub async fn ui_status_bar_height() -> SpResult<i32> {
                 return Ok(if top > 0 {
                     top
                 } else {
-                    status_bar_dimen_fallback(&env, &activity)
+                    status_bar_dimen_fallback(&mut env, &activity)
                 });
             }
 
             // 老系统兜底
-            return Ok(status_bar_dimen_fallback(&env, &activity));
+            return Ok(status_bar_dimen_fallback(&mut env, &activity));
         }
 
         // 兜底：读 "status_bar_height"
-        fn status_bar_dimen_fallback(env: &jni::JNIEnv, context: &JObject) -> i32 {
+        fn status_bar_dimen_fallback(env: &mut jni::JNIEnv, context: &JObject) -> i32 {
             let resources = env
                 .call_method(
                     context,

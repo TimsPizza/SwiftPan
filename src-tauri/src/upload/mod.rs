@@ -1,6 +1,5 @@
 use crate::settings;
 use crate::types::*;
-use crate::usage::UsageSync;
 use crate::{r2_client, sp_backend::SpBackend};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
