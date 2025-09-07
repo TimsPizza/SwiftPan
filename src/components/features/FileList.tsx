@@ -1,5 +1,6 @@
 import FileItem, { DesktopFileItem } from "@/components/features/FileItem";
 import {
+  BatchShareDialog,
   FileDetailsDialog,
   FileItemPopOverMenu,
   FileShareDialog,
@@ -69,6 +70,7 @@ export const FileList = ({ files }: FileListProps) => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<File | null>(null);
   const [multiDeleteOpen, setMultiDeleteOpen] = useState(false);
+  // No custom dialogs for download/share on mobile; use OS pickers
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Mobile/Desktop popover state
@@ -78,6 +80,7 @@ export const FileList = ({ files }: FileListProps) => {
     null,
   );
   const [shareOpen, setShareOpen] = useState(false);
+  const [batchShareOpen, setBatchShareOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [activeFile, setActiveFile] = useState<File | null>(null);
 
@@ -100,8 +103,7 @@ export const FileList = ({ files }: FileListProps) => {
   };
 
   // Prefer hook's downloadOne to avoid new tab navigation
-  const handleDownload = async (dest_path: string) => {
-    if (!activeFile) return;
+  const handleDownload = async (file: File, dest_path: string) => {
     // dest_path is full file path; derive base directory
     const sep = dest_path.includes("\\") ? "\\" : "/";
     const idx = dest_path.lastIndexOf(sep);
@@ -122,7 +124,7 @@ export const FileList = ({ files }: FileListProps) => {
       }
     } catch {}
     toast.info(`Download started`);
-    await batch.downloadOne(activeFile, base);
+    await batch.downloadOne(file, base);
   };
 
   const handleDeleteClick = (file: File) => {
@@ -131,13 +133,71 @@ export const FileList = ({ files }: FileListProps) => {
   };
 
   const handleUploadClick = async () => {
+    const isAndroid = /Android/i.test(navigator.userAgent || "");
+    if (isAndroid) {
+      // Android: always use HTML file input to avoid double picker
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.onchange = async () => {
+        const filesChosen = Array.from(input.files || []);
+        if (filesChosen.length === 0) return;
+        const bucketKeys = new Set(files.map((f) => f.id));
+        const storeItems = useTransferStore.getState().items;
+        for (const f of filesChosen) {
+          const key = f.name;
+          if (bucketKeys.has(key)) {
+            toast.error(`File already exists: ${key}`);
+            continue;
+          }
+          const dup = Object.values(storeItems).some(
+            (t) =>
+              t.type === "upload" &&
+              t.key === key &&
+              t.state !== "completed" &&
+              t.state !== "failed",
+          );
+          if (dup) {
+            toast.info(`Already uploading: ${key}`);
+            continue;
+          }
+          const start = await nv.upload_new_stream({
+            key,
+            bytes_total: f.size,
+            part_size: 8 * 1024 * 1024,
+          });
+          await start.match(
+            async (id) => {
+              toast.success(`Upload started: ${key}`);
+              setTransfersOpen(true);
+              const CHUNK = 1024 * 1024 * 4; // 4 MiB
+              for (let offset = 0; offset < f.size; offset += CHUNK) {
+                const slice = f.slice(offset, Math.min(f.size, offset + CHUNK));
+                const buf = new Uint8Array(await slice.arrayBuffer());
+                const r = await nv.upload_stream_write(id, buf);
+                if (r.isErr()) break;
+              }
+              await nv.upload_stream_finish(id);
+            },
+            async (e) => {
+              console.error(e);
+              toast.error(`Upload failed to start: ${key}`);
+            },
+          );
+        }
+      };
+      input.click();
+      return;
+    }
+
     const picked = await open({ multiple: true });
-    const selected = picked ? (Array.isArray(picked) ? picked : [picked]) : [];
-    if (selected.length === 0) return;
+    const entries = picked ? (Array.isArray(picked) ? picked : [picked]) : [];
+    if (entries.length === 0) return;
+
+    const selected = entries.map((e) => String(e));
     const bucketKeys = new Set(files.map((f) => f.id));
     const storeItems = useTransferStore.getState().items;
-    for (const p of selected) {
-      const filePath = String(p);
+    for (const filePath of selected) {
       const fileName = filePath.split("/").pop() || filePath;
       const key = fileName;
       if (bucketKeys.has(key)) {
@@ -193,13 +253,14 @@ export const FileList = ({ files }: FileListProps) => {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { useAppStore } = await import("@/store/app-store");
     const base = useAppStore.getState().defaultDownloadDir;
+    // If base unset, at least suggest filename so the dialog isn't blank
     const defaultPath =
       base && base.trim().length > 0
         ? `${base.replace(/[\\/]$/, "")}/${file.filename}`
-        : undefined;
+        : file.filename;
     const picked = await save({ defaultPath });
     if (!picked) return;
-    await handleDownload(String(picked));
+    await handleDownload(file, String(picked));
   };
 
   if (!files || files.length === 0) {
@@ -627,12 +688,17 @@ export const FileList = ({ files }: FileListProps) => {
           await batch.batchDownload(chosen);
         }}
         onDeleteAll={() => setMultiDeleteOpen(true)}
-        onShareAll={() => {}}
+        onShareAll={() => setBatchShareOpen(true)}
       />
       <FileMultiSelectTooltip
         selectedFiles={batch.getSelectedFiles()}
         onSelectAll={() => batch.selectAll()}
         onDeselectAll={() => batch.deselectAll()}
+      />
+      <BatchShareDialog
+        selectedFiles={batch.getSelectedFiles()}
+        open={batchShareOpen}
+        onOpenChange={setBatchShareOpen}
       />
     </div>
   );

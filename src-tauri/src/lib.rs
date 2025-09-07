@@ -17,6 +17,9 @@ pub fn run() {
             crate::bridge::vault_set_manual, // legacy shim
             crate::bridge::r2_sanity_check,
             crate::bridge::upload_new,
+            crate::bridge::upload_new_stream,
+            crate::bridge::upload_stream_write,
+            crate::bridge::upload_stream_finish,
             crate::bridge::upload_ctrl,
             crate::bridge::upload_status,
             crate::bridge::download_new,

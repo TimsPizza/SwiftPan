@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/Button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -21,7 +23,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import type { FileItem as TFileItem } from "@/lib/api/schemas";
+import type { FileItem, FileItem as TFileItem } from "@/lib/api/schemas";
+import { nv } from "@/lib/api/tauriBridge";
 import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -44,6 +47,13 @@ export interface FileShareDialogProps {
 
 export interface FileDetailsDialogProps {
   file: TFileItem;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  centerOnMobile?: boolean;
+}
+
+export interface BatchShareDialogProps {
+  selectedFiles: FileItem[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   centerOnMobile?: boolean;
@@ -149,9 +159,9 @@ export const FileShareDialog = ({
                 <SelectValue placeholder="Select expiration" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="1">1 min</SelectItem>
-                <SelectItem value="1">5 min</SelectItem>
-                <SelectItem value="1">15 min</SelectItem>
+                <SelectItem value="0.0167">1 min</SelectItem>
+                <SelectItem value="0.0833">5 min</SelectItem>
+                <SelectItem value="0.25">15 min</SelectItem>
                 <SelectItem value="1">1 hour</SelectItem>
                 <SelectItem value="24">24 hours</SelectItem>
                 <SelectItem value="72">3 days</SelectItem>
@@ -200,6 +210,113 @@ export const FileShareDialog = ({
             </div>
           )}
         </div>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+export const BatchShareDialog = ({
+  open,
+  onOpenChange,
+  selectedFiles,
+}: BatchShareDialogProps) => {
+  const [ttlHours, setTtlHours] = useState<string>("24");
+  const [loading, setLoading] = useState(false);
+  const [links, setLinks] = useState<{ key: string; url: string }[] | null>(
+    null,
+  );
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v: boolean) => {
+        if (!v) setLinks(null);
+        onOpenChange(v);
+      }}
+    >
+      <DialogContent className="w-[min(92vw,28rem)]">
+        <DialogHeader>
+          <DialogTitle>Share {selectedFiles.length} file(s)</DialogTitle>
+          <DialogDescription>
+            Generate public links for the selected files.
+          </DialogDescription>
+        </DialogHeader>
+        {!links ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <Label className="min-w-24">Expiration</Label>
+              <Select value={ttlHours} onValueChange={setTtlHours}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select expiration" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1 hour</SelectItem>
+                  <SelectItem value="24">24 hours</SelectItem>
+                  <SelectItem value="72">3 days</SelectItem>
+                  <SelectItem value="168">7 days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <textarea
+              className="min-h-32 w-full rounded border p-2 text-xs"
+              readOnly
+              value={links.map((l) => `${l.key}\n${l.url}`).join("\n\n")}
+            />
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(
+                    links!.map((l) => `${l.key}\n${l.url}`).join("\n\n"),
+                  );
+                  toast.success("Links copied");
+                }}
+              >
+                Copy
+              </Button>
+              <Button onClick={() => onOpenChange(false)}>Done</Button>
+            </div>
+          </div>
+        )}
+        {!links ? (
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={loading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  const ttl_secs = Number(ttlHours) * 3600;
+                  const out: { key: string; url: string }[] = [];
+                  for (const f of selectedFiles) {
+                    const r = await nv.share_generate({
+                      key: f.id,
+                      ttl_secs,
+                      download_filename: f.filename,
+                    });
+                    r.match(
+                      (v: any) => out.push({ key: f.filename, url: v.url }),
+                      () => {},
+                    );
+                  }
+                  setLinks(out);
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              disabled={loading}
+            >
+              Create
+            </Button>
+          </DialogFooter>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

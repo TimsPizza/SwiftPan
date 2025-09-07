@@ -134,10 +134,19 @@ pub async fn start_download(app: tauri::AppHandle, params: NewDownloadParams) ->
         )
         .await;
         if let Err(e) = res {
+            // Record the error in state
             let mut g = DL.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(t) = g.get_mut(&id_spawn) {
-                t.last_error = Some(e);
+                t.last_error = Some(e.clone());
             }
+            // Emit a Failed event so UI can transition out of running state
+            emit_download(
+                &app_spawn,
+                &DownloadEvent::Failed {
+                    transfer_id: id_spawn.clone(),
+                    error: e,
+                },
+            );
         }
     });
 

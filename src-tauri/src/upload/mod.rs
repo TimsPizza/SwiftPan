@@ -12,11 +12,21 @@ use std::sync::{
 };
 use tauri::Emitter;
 use tokio::io::AsyncReadExt;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewUploadParams {
     pub key: String,
     pub source_path: String,
+    pub part_size: u64,
+    pub content_type: Option<String>,
+    pub content_disposition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewUploadStreamParams {
+    pub key: String,
+    pub bytes_total: u64,
     pub part_size: u64,
     pub content_type: Option<String>,
     pub content_disposition: Option<String>,
@@ -77,6 +87,9 @@ struct UTransfer {
 }
 
 static UL: Lazy<Mutex<HashMap<String, UTransfer>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+// Streaming upload channels: id -> sender
+static USTREAMS: Lazy<Mutex<HashMap<String, mpsc::Sender<Option<Vec<u8>>>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn emit_upload(app: &tauri::AppHandle, ev: &UploadEvent) {
     let _ = app.emit("sp://upload_event", ev);
@@ -138,6 +151,172 @@ pub async fn start_upload(app: tauri::AppHandle, params: NewUploadParams) -> SpR
         }
     });
     Ok(id)
+}
+
+pub async fn start_upload_stream(
+    app: tauri::AppHandle,
+    params: NewUploadStreamParams,
+) -> SpResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let paused = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let mut g = UL.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "upload state lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        g.insert(
+            id.clone(),
+            UTransfer {
+                key: params.key.clone(),
+                src: PathBuf::new(),
+                part_size: params.part_size.max(512 * 1024),
+                bytes_total: params.bytes_total,
+                bytes_done: 0,
+                parts_completed: 0,
+                last_error: None,
+                paused: paused.clone(),
+                cancelled: cancelled.clone(),
+            },
+        );
+    }
+    let (tx, mut rx) = mpsc::channel::<Option<Vec<u8>>>(8);
+    {
+        let mut s = USTREAMS.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "upload streams lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        s.insert(id.clone(), tx);
+    }
+
+    let id_spawn = id.clone();
+    let app_spawn = app.clone();
+    tokio::spawn(async move {
+        let res = async {
+            emit_upload(
+                &app_spawn,
+                &UploadEvent::Started {
+                    transfer_id: id_spawn.clone(),
+                },
+            );
+            let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
+            let client = r2_client::build_client(&bundle.r2).await?;
+            let mut writer = client.op.writer(&params.key).await.map_err(|e| SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("open writer: {e}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+            let mut part_number: u32 = 1;
+            while let Some(msg) = rx.recv().await {
+                if cancelled.load(Ordering::Relaxed) { break; }
+                while paused.load(Ordering::Relaxed) {
+                    emit_upload(&app_spawn, &UploadEvent::Paused { transfer_id: id_spawn.clone() });
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                emit_upload(&app_spawn, &UploadEvent::Resumed { transfer_id: id_spawn.clone() });
+                match msg {
+                    Some(bytes) => {
+                        let n = bytes.len() as u64;
+                        writer.write(bytes).await.map_err(|e| SpError {
+                            kind: ErrorKind::RetryableNet,
+                            message: format!("writer write: {e}"),
+                            retry_after_ms: Some(300),
+                            context: None,
+                            at: chrono::Utc::now().timestamp_millis(),
+                        })?;
+                        {
+                            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(t) = g.get_mut(&id_spawn) {
+                                t.bytes_done = t.bytes_done.saturating_add(n);
+                                t.parts_completed += 1;
+                            }
+                        }
+                        emit_upload(
+                            &app_spawn,
+                            &UploadEvent::PartProgress {
+                                transfer_id: id_spawn.clone(),
+                                progress: crate::types::UploadPartProgress { part_number, bytes_transferred: n },
+                            },
+                        );
+                        emit_upload(&app_spawn, &UploadEvent::PartDone { transfer_id: id_spawn.clone(), part_number, etag: String::new() });
+                        part_number += 1;
+                    }
+                    None => break,
+                }
+            }
+            writer.close().await.map_err(|e| SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("writer close: {e}"),
+                retry_after_ms: Some(300),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+            emit_upload(&app_spawn, &UploadEvent::Completed { transfer_id: id_spawn.clone() });
+            Ok::<(), SpError>(())
+        }.await;
+        if let Err(e) = res {
+            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(t) = g.get_mut(&id_spawn) {
+                t.last_error = Some(e);
+            }
+        }
+        // cleanup channel
+        let mut s = USTREAMS.lock().unwrap_or_else(|p| p.into_inner());
+        s.remove(&id_spawn);
+    });
+    Ok(id)
+}
+
+pub fn stream_write(id: &str, chunk: Vec<u8>) -> SpResult<()> {
+    let g = USTREAMS.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload streams lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    if let Some(tx) = g.get(id) {
+        tx.try_send(Some(chunk)).map_err(|e| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("stream write: {e}"),
+            retry_after_ms: Some(100),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        Ok(())
+    } else {
+        Err(SpError { kind: ErrorKind::NotRetriable, message: "not found".into(), retry_after_ms: None, context: None, at: chrono::Utc::now().timestamp_millis() })
+    }
+}
+
+pub fn stream_finish(id: &str) -> SpResult<()> {
+    let g = USTREAMS.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload streams lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    if let Some(tx) = g.get(id) {
+        tx.try_send(None).map_err(|e| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("stream finish: {e}"),
+            retry_after_ms: Some(100),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        Ok(())
+    } else {
+        Err(SpError { kind: ErrorKind::NotRetriable, message: "not found".into(), retry_after_ms: None, context: None, at: chrono::Utc::now().timestamp_millis() })
+    }
 }
 
 async fn run_upload(

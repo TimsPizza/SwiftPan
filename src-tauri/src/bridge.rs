@@ -3,7 +3,7 @@ use crate::r2_client;
 use crate::share::{ShareLink, ShareParams};
 use crate::sp_backend::{BackendState as BackendStatus, CredentialBundle, SpBackend};
 use crate::types::*;
-use crate::upload::{NewUploadParams, UploadStatus};
+use crate::upload::{NewUploadParams, NewUploadStreamParams, UploadStatus};
 use tokio::io::AsyncWriteExt;
 
 // Backend status (replaces vault_status)
@@ -140,16 +140,52 @@ pub async fn upload_new(app: tauri::AppHandle, params: NewUploadParams) -> SpRes
     crate::logger::info(
         "bridge",
         &format!(
-            "upload_new key={} part_size={}",
-            params.key, params.part_size
+            "upload_new key={} part_size={} path={}",
+            params.key, params.part_size, params.source_path
         ),
     );
     let r = crate::upload::start_upload(app, params).await;
     match &r {
         Ok(id) => crate::logger::info("bridge", &format!("upload_new ok id={}", id)),
-        Err(e) => crate::logger::info("bridge", &format!("upload_new err: {}", e.message)),
+        Err(e) => crate::logger::error("bridge", &format!("upload_new err: {}", e.message)),
     }
     r
+}
+#[tauri::command]
+pub async fn upload_new_stream(
+    app: tauri::AppHandle,
+    params: NewUploadStreamParams,
+) -> SpResult<String> {
+    crate::logger::info(
+        "bridge",
+        &format!(
+            "upload_new_stream key={} total={} part_size={}",
+            params.key, params.bytes_total, params.part_size
+        ),
+    );
+    let r = crate::upload::start_upload_stream(app, params).await;
+    match &r {
+        Ok(id) => crate::logger::info("bridge", &format!("upload_new_stream ok id={}", id)),
+        Err(e) => crate::logger::error("bridge", &format!("upload_new_stream err: {}", e.message)),
+    }
+    r
+}
+
+#[tauri::command]
+pub async fn upload_stream_write(
+    _app: tauri::AppHandle,
+    transfer_id: String,
+    chunk: Vec<u8>,
+) -> SpResult<()> {
+    crate::upload::stream_write(&transfer_id, chunk)
+}
+
+#[tauri::command]
+pub async fn upload_stream_finish(
+    _app: tauri::AppHandle,
+    transfer_id: String,
+) -> SpResult<()> {
+    crate::upload::stream_finish(&transfer_id)
 }
 // Implemented below
 
@@ -317,6 +353,8 @@ pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
     // Usage accounted by HTTP layer.
     Ok(())
 }
+
+// (streaming upload commands are defined earlier with app handle)
 
 #[tauri::command]
 pub async fn list_objects(

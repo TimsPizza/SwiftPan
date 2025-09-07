@@ -139,7 +139,8 @@ export const nv = {
         protected: boolean;
       }[]
     >("list_all_objects", { maxTotal }),
-  delete_object: (key: string) => resultInvoke<string>("delete_object", { key }),
+  delete_object: (key: string) =>
+    resultInvoke<string>("delete_object", { key }),
   share_generate: (params: {
     key: string;
     ttl_secs: number;
@@ -164,10 +165,25 @@ export const nv = {
     content_type?: string;
     content_disposition?: string;
   }) => resultInvoke<string>("upload_new", { params }),
+  upload_new_stream: (params: {
+    key: string;
+    bytes_total: number;
+    part_size: number;
+    content_type?: string;
+    content_disposition?: string;
+  }) => resultInvoke<string>("upload_new_stream", { params }),
+  upload_stream_write: (transferId: string, chunk: Uint8Array | number[]) =>
+    resultInvoke<void>("upload_stream_write", {
+      transferId,
+      chunk: Array.from(chunk as any),
+    }),
+  upload_stream_finish: (transferId: string) =>
+    resultInvoke<void>("upload_stream_finish", { transferId }),
   upload_ctrl: (transferId: string, action: "pause" | "resume" | "cancel") =>
     resultInvoke<void>("upload_ctrl", { transferId, action }),
   upload_status: (transferId: string) =>
     resultInvoke<UploadStatus>("upload_status", { transferId }),
+  // deprecated
   download_now: (key: string, destPath: string) =>
     resultInvoke<void>("download_now", { key, destPath }),
   download_new: (params: {
