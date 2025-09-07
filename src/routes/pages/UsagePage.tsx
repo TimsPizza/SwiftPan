@@ -1,10 +1,19 @@
 import { TrafficTrendsChart } from "@/components/charts/TrafficTrendsChart";
 import { UsageTrendsChart } from "@/components/charts/UsageTrendsChart";
 import GlobalError from "@/components/fallback/GlobalError";
-import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { mutations, queries } from "@/lib/api/tauriBridge";
+import { formatBytes } from "@/lib/utils";
 import { useEffect, useMemo, useState } from "react";
 
 export default function UsagePage() {
@@ -94,21 +103,6 @@ export default function UsagePage() {
               onChange={(e) => setMonth(e.target.value)}
               className="border-input bg-background ring-offset-background focus-visible:ring-ring placeholder:text-muted-foreground flex h-9 w-fit rounded-md border px-3 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
             />
-            <Button
-              onClick={() => Promise.all([usageQ.refetch(), costQ.refetch()])}
-              disabled={usageQ.isLoading || costQ.isLoading}
-            >
-              Refresh
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() =>
-                mergeMutation.mutate(new Date().toISOString().slice(0, 10))
-              }
-              disabled={mergeMutation.isLoading}
-            >
-              {mergeMutation.isLoading ? "Merging…" : "Merge Today"}
-            </Button>
             {(usageQ.isLoading || costQ.isLoading) && (
               <div className="flex items-center gap-2">
                 <div className="bg-muted h-4 w-32 animate-pulse rounded" />
@@ -189,6 +183,141 @@ export default function UsagePage() {
               <div className="bg-muted h-20 w-full animate-pulse rounded" />
               <div className="bg-muted h-20 w-full animate-pulse rounded" />
               <div className="bg-muted h-20 w-full animate-pulse rounded" />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Monthly Usage Table */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Usage (Table)</CardTitle>
+        </CardHeader>
+        <CardContent className="max-h-52 overflow-y-auto">
+          {usageQ.isLoading ? (
+            <div className="space-y-2">
+              <div className="bg-muted h-6 w-full animate-pulse rounded" />
+              <div className="bg-muted h-6 w-full animate-pulse rounded" />
+              <div className="bg-muted h-6 w-full animate-pulse rounded" />
+            </div>
+          ) : items && items.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-28">Date</TableHead>
+                  <TableHead>Upload</TableHead>
+                  <TableHead>Download</TableHead>
+                  <TableHead className="hidden lg:table-cell">
+                    Storage
+                  </TableHead>
+                  <TableHead className="hidden lg:table-cell">Peak</TableHead>
+                  <TableHead className="hidden lg:table-cell">
+                    Deleted
+                  </TableHead>
+                  <TableHead className="text-right">Class A Ops</TableHead>
+                  <TableHead className="text-right">Class B Ops</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[...items]
+                  .sort((a: any, b: any) =>
+                    String(a.date).localeCompare(String(b.date)),
+                  )
+                  .map((d: any) => {
+                    const aOps = Object.values(d.class_a || {}).reduce(
+                      (acc: number, v: any) => acc + Number(v || 0),
+                      0,
+                    );
+                    const bOps = Object.values(d.class_b || {}).reduce(
+                      (acc: number, v: any) => acc + Number(v || 0),
+                      0,
+                    );
+                    return (
+                      <TableRow key={d.date}>
+                        <TableCell className="font-mono text-xs">
+                          {String(d.date)}
+                        </TableCell>
+                        <TableCell>
+                          {formatBytes(Number(d.ingress_bytes || 0))}
+                        </TableCell>
+                        <TableCell>
+                          {formatBytes(Number(d.egress_bytes || 0))}
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell">
+                          {formatBytes(Number(d.storage_bytes || 0))}
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell">
+                          {formatBytes(Number(d.peak_storage_bytes || 0))}
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell">
+                          {formatBytes(Number(d.deleted_storage_bytes || 0))}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {aOps.toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {bOps.toLocaleString()}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+              </TableBody>
+              <TableFooter>
+                <TableRow>
+                  <TableCell className="font-medium">Totals</TableCell>
+                  <TableCell className="font-medium">
+                    {formatBytes(
+                      items.reduce(
+                        (acc: number, d: any) =>
+                          acc + Number(d.ingress_bytes || 0),
+                        0,
+                      ),
+                    )}
+                  </TableCell>
+                  <TableCell className="font-medium">
+                    {formatBytes(
+                      items.reduce(
+                        (acc: number, d: any) =>
+                          acc + Number(d.egress_bytes || 0),
+                        0,
+                      ),
+                    )}
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell" />
+                  <TableCell className="hidden lg:table-cell" />
+                  <TableCell className="hidden lg:table-cell" />
+                  <TableCell className="text-right font-medium">
+                    {items
+                      .reduce(
+                        (acc: number, d: any) =>
+                          acc +
+                          Object.values(d.class_a || {}).reduce(
+                            (a: number, v: any) => a + Number(v || 0),
+                            0,
+                          ),
+                        0,
+                      )
+                      .toLocaleString()}
+                  </TableCell>
+                  <TableCell className="text-right font-medium">
+                    {items
+                      .reduce(
+                        (acc: number, d: any) =>
+                          acc +
+                          Object.values(d.class_b || {}).reduce(
+                            (a: number, v: any) => a + Number(v || 0),
+                            0,
+                          ),
+                        0,
+                      )
+                      .toLocaleString()}
+                  </TableCell>
+                </TableRow>
+              </TableFooter>
+            </Table>
+          ) : (
+            <div className="text-muted-foreground text-sm">
+              No data for this month.
             </div>
           )}
         </CardContent>

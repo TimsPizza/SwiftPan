@@ -264,7 +264,6 @@ export default function SettingsPage() {
             </div>
             <div className="flex gap-2">
               <Button
-                variant="outline"
                 onClick={async () => {
                   const r = await nv.settings_set({
                     logLevel,

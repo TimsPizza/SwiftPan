@@ -59,7 +59,7 @@ export default function TransfersPage() {
         </CardHeader>
         <CardContent>
           {sorted.length === 0 ? (
-            <div className="text-muted-foreground p-3 text-sm">No tasks</div>
+            <div className="text-muted-foreground text-sm">No tasks</div>
           ) : (
             <ul className="space-y-2">
               {sorted.map((t) => {

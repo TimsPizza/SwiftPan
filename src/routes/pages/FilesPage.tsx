@@ -101,8 +101,8 @@ export default function FilesPage() {
       </div>
     );
   return (
-    <div className="flex min-h-0 w-full flex-col">
+    <>
       <FileList files={files} />
-    </div>
+    </>
   );
 }

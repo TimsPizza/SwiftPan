@@ -4,6 +4,15 @@ import {
   FileItemPopOverMenu,
   FileShareDialog,
 } from "@/components/features/FilePopovers";
+
+import {
+  DeleteMultiFileDialog,
+  DeleteSingleFileDialog,
+} from "@/components/features/DeleteDialogs";
+import {
+  FileDownloadDeleteTooltip,
+  FileMultiSelectTooltip,
+} from "@/components/features/FileTooltips";
 import { Button } from "@/components/ui/Button";
 import {
   Card,
@@ -17,16 +26,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -47,8 +46,8 @@ import { useFileBatchAction } from "@/hooks/use-file-batch-action";
 import type { FileItem as File } from "@/lib/api/schemas";
 import { nv } from "@/lib/api/tauriBridge";
 import { cn } from "@/lib/utils";
-import { useTransferStore } from "@/store/transfer-store";
 import { useAppStore } from "@/store/app-store";
+import { useTransferStore } from "@/store/transfer-store";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowUpDown,
@@ -57,7 +56,7 @@ import {
   FileIcon,
   UploadIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 
 interface FileListProps {
@@ -69,7 +68,7 @@ interface FileListProps {
 export const FileList = ({ files }: FileListProps) => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<File | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [multiDeleteOpen, setMultiDeleteOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Mobile/Desktop popover state
@@ -82,154 +81,18 @@ export const FileList = ({ files }: FileListProps) => {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [activeFile, setActiveFile] = useState<File | null>(null);
 
-  // Search, sort, filter state
-  const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState<
-    "name" | "size" | "uploadedAt" | "type" | null
-  >(null);
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
-  const [typeFilter, setTypeFilter] = useState<
-    "all" | "image" | "video" | "audio" | "doc" | "other"
-  >("all");
-  const [timeFilter, setTimeFilter] = useState<"any" | "24h" | "7d" | "30d">(
-    "any",
-  );
-  const [minSizeMB, setMinSizeMB] = useState<string>("");
-  const [maxSizeMB, setMaxSizeMB] = useState<string>("");
+  // Filters/sort/pagination are managed by the hook
   const setTransfersOpen = useTransferStore((s) => s.ui.setOpen);
 
-  const getCategory = (
-    filename: string,
-    mimeType?: string,
-  ): "image" | "video" | "audio" | "doc" | "other" => {
-    const ext = filename.split(".").pop()?.toLowerCase();
-    if (
-      ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "tiff"].includes(
-        ext || "",
-      )
-    )
-      return "image";
-    if (["mp4", "avi", "mov", "wmv", "mkv", "webm"].includes(ext || ""))
-      return "video";
-    if (["mp3", "wav", "flac", "aac", "ogg", "m4a"].includes(ext || ""))
-      return "audio";
-    if (
-      [
-        "pdf",
-        "doc",
-        "docx",
-        "txt",
-        "md",
-        "xls",
-        "xlsx",
-        "ppt",
-        "pptx",
-      ].includes(ext || "")
-    )
-      return "doc";
-    if (mimeType?.startsWith("image/")) return "image";
-    if (mimeType?.startsWith("video/")) return "video";
-    if (mimeType?.startsWith("audio/")) return "audio";
-    return "other";
-  };
-
-  const processedFiles = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const now = Date.now();
-    let startTime = 0;
-    if (timeFilter === "24h") startTime = now - 24 * 60 * 60 * 1000;
-    else if (timeFilter === "7d") startTime = now - 7 * 24 * 60 * 60 * 1000;
-    else if (timeFilter === "30d") startTime = now - 30 * 24 * 60 * 60 * 1000;
-
-    const minBytes = minSizeMB
-      ? Math.max(0, Math.floor(Number(minSizeMB) * 1024 * 1024))
-      : 0;
-    const maxBytes = maxSizeMB
-      ? Math.max(0, Math.floor(Number(maxSizeMB) * 1024 * 1024))
-      : Number.POSITIVE_INFINITY;
-
-    const filtered = (files || []).filter((f) => {
-      if (!f) return false;
-      if (
-        q &&
-        !f.filename.toLowerCase().includes(q) &&
-        !f.originalName.toLowerCase().includes(q)
-      )
-        return false;
-      if (
-        typeFilter !== "all" &&
-        getCategory(f.filename, f.mimeType) !== typeFilter
-      )
-        return false;
-      if (timeFilter !== "any" && f.uploadedAt < startTime) return false;
-      if (f.size < minBytes || f.size > maxBytes) return false;
-      return true;
-    });
-
-    if (!sortBy) return filtered;
-    const sorted = filtered.sort((a, b) => {
-      const dir = sortOrder === "asc" ? 1 : -1;
-      switch (sortBy) {
-        case "name":
-          return dir * a.filename.localeCompare(b.filename);
-        case "size":
-          return dir * (a.size - b.size);
-        case "uploadedAt":
-          return dir * (a.uploadedAt - b.uploadedAt);
-        case "type": {
-          const ca = getCategory(a.filename, a.mimeType);
-          const cb = getCategory(b.filename, b.mimeType);
-          return dir * ca.localeCompare(cb);
-        }
-        default:
-          return 0;
-      }
-    });
-
-    return sorted;
-  }, [
-    files,
-    search,
-    typeFilter,
-    timeFilter,
-    minSizeMB,
-    maxSizeMB,
-    sortBy,
-    sortOrder,
-  ]);
-
-  // Pagination (10 per page)
-  const PAGE_SIZE = 10;
-  const [page, setPage] = useState(1);
-  const totalItems = processedFiles.length;
-  const totalPages = Math.max(1, Math.ceil(totalItems / PAGE_SIZE));
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [totalPages]);
-  const startIdx = (page - 1) * PAGE_SIZE;
-  const pagedFiles = useMemo(
-    () => processedFiles.slice(startIdx, startIdx + PAGE_SIZE),
-    [processedFiles, startIdx],
-  );
-
   // batch actions using hook
-  const batch = useFileBatchAction(files, pagedFiles);
+  const batch = useFileBatchAction(files);
 
-  const toggleSort = (key: "name" | "size" | "uploadedAt" | "type") => {
-    if (sortBy !== key) {
-      setSortBy(key);
-      setSortOrder("asc");
-    } else if (sortOrder === "asc") {
-      setSortOrder("desc");
-    } else {
-      setSortBy(null);
-    }
-  };
+  // Pagination is fully managed by the hook
 
   const renderSortIcon = (key: "name" | "size" | "uploadedAt" | "type") => {
-    if (sortBy !== key)
+    if (batch.sortBy !== key)
       return <ArrowUpDown className="h-3.5 w-3.5 opacity-50" />;
-    return sortOrder === "asc" ? (
+    return batch.sortOrder === "asc" ? (
       <ChevronUp className="h-3.5 w-3.5" />
     ) : (
       <ChevronDown className="h-3.5 w-3.5" />
@@ -265,15 +128,6 @@ export const FileList = ({ files }: FileListProps) => {
   const handleDeleteClick = (file: File) => {
     setFileToDelete(file);
     setDeleteDialogOpen(true);
-  };
-
-  const handleDeleteConfirm = async () => {
-    if (!fileToDelete) return;
-
-    setIsDeleting(true);
-    // Deletion delegated to hook's batch.deleteSelected via selection UX
-    setIsDeleting(false);
-    setDeleteDialogOpen(false);
   };
 
   const handleUploadClick = async () => {
@@ -363,311 +217,297 @@ export const FileList = ({ files }: FileListProps) => {
   }
 
   return (
-    <div id="file-list-container" className="max-h-[80%] min-h-0 flex-1">
-      <div className="flex w-full min-w-0 flex-col gap-4 overflow-y-auto">
-        <CardHeader className="flex flex-col gap-2">
-          <CardTitle className="flex w-full items-center justify-between">
-            Files ({processedFiles.length}){" "}
-            <div className="ml-auto">
-              <Button asChild onClick={handleUploadClick} size="sm">
-                <div>
-                  <UploadIcon className="mr-1 h-4 w-4" />
-                  Upload
-                </div>
-              </Button>
-            </div>
-          </CardTitle>
-          <CardDescription>Manage your uploaded files</CardDescription>
-        </CardHeader>
-        <CardContent className="flex w-full flex-col gap-2">
-          {/* Collapsible filter controls (all screens) */}
-          <Separator className="my-2" />
-          <Collapsible
-            className="flex flex-col gap-2"
-            open={filtersOpen}
-            id="filelist-filters"
+    <div
+      id="file-list-container"
+      className="flex max-h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-4"
+    >
+      <CardHeader className="flex flex-col gap-2">
+        <CardTitle className="flex w-full items-center justify-between">
+          Files ({batch.totalItems}){" "}
+          <div className="ml-auto">
+            <Button asChild onClick={handleUploadClick} size="sm">
+              <div>
+                <UploadIcon className="mr-1 h-4 w-4" />
+                Upload
+              </div>
+            </Button>
+          </div>
+        </CardTitle>
+        <CardDescription>Manage your uploaded files</CardDescription>
+      </CardHeader>
+      <CardContent className="flex h-full min-h-0 w-full flex-col gap-2">
+        {/* Collapsible filter controls (all screens) */}
+        <Separator className="my-2" />
+        <Collapsible
+          className="flex flex-col gap-2"
+          open={filtersOpen}
+          id="filelist-filters"
+        >
+          <CollapsibleTrigger
+            onPointerDown={() => setFiltersOpen((v) => !v)}
+            className="flex w-20"
           >
-            <CollapsibleTrigger
-              onPointerDown={() => setFiltersOpen((v) => !v)}
-              asChild
-              className="flex w-20"
-            >
-              <Button variant="outline" size="sm">
-                <ChevronUp
-                  className={cn(
-                    "transition-transform duration-200",
-                    filtersOpen && "rotate-180",
-                  )}
+            <Button variant="outline" size="sm">
+              <ChevronUp
+                className={cn(
+                  "transition-transform duration-200",
+                  !filtersOpen && "rotate-180",
+                )}
+              />
+              Filters
+            </Button>
+          </CollapsibleTrigger>
+
+          <CollapsibleContent>
+            <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="Search files..."
+                  value={batch.search}
+                  onChange={(e) => batch.setSearch(e.target.value)}
                 />
-                Filters
-              </Button>
-            </CollapsibleTrigger>
-
-            <CollapsibleContent>
-              <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
-                <div className="flex items-center gap-2">
-                  <Input
-                    placeholder="Search files..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={typeFilter}
-                    onValueChange={(
-                      v: "all" | "image" | "video" | "audio" | "doc" | "other",
-                    ) => setTypeFilter(v)}
-                  >
-                    <SelectTrigger className="w-full" size="sm">
-                      <SelectValue placeholder="Type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Types</SelectItem>
-                      <SelectItem value="image">Images</SelectItem>
-                      <SelectItem value="video">Videos</SelectItem>
-                      <SelectItem value="audio">Audio</SelectItem>
-                      <SelectItem value="doc">Documents</SelectItem>
-                      <SelectItem value="other">Other</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={timeFilter}
-                    onValueChange={(v: "any" | "24h" | "7d" | "30d") =>
-                      setTimeFilter(v)
-                    }
-                  >
-                    <SelectTrigger className="w-32" size="sm">
-                      <SelectValue placeholder="Uploaded" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="any">Any time</SelectItem>
-                      <SelectItem value="24h">Last 24h</SelectItem>
-                      <SelectItem value="7d">Last 7 days</SelectItem>
-                      <SelectItem value="30d">Last 30 days</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex items-center justify-end gap-2">
-                  <Input
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="Min size (MB)"
-                    value={minSizeMB}
-                    onChange={(e) => setMinSizeMB(e.target.value)}
-                  />
-                  <Input
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="Max size (MB)"
-                    value={maxSizeMB}
-                    onChange={(e) => setMaxSizeMB(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground text-xs">Sort</span>
-                  <Select
-                    value={(sortBy ?? "uploadedAt") as any}
-                    onValueChange={(
-                      v: "name" | "size" | "uploadedAt" | "type",
-                    ) => setSortBy(v)}
-                  >
-                    <SelectTrigger className="w-full" size="sm">
-                      <SelectValue placeholder="Sort" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="name">Name</SelectItem>
-                      <SelectItem value="size">Size</SelectItem>
-                      <SelectItem value="uploadedAt">Uploaded</SelectItem>
-                      <SelectItem value="type">Type</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground text-xs">Order</span>
-                  <Select
-                    value={sortOrder}
-                    onValueChange={(v: "asc" | "desc") => setSortOrder(v)}
-                  >
-                    <SelectTrigger className="w-full" size="sm">
-                      <SelectValue placeholder="Order" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="asc">Ascending</SelectItem>
-                      <SelectItem value="desc">Descending</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-          <Separator className="my-2" />
-
-          {/* batch actions */}
-          {batch.selectedCount > 0 && (
-            <div className="mb-3 flex items-center justify-between rounded-md border p-2">
-              <div className="text-sm">
-                <span className="font-medium">{batch.selectedCount}</span>{" "}
-                selected
               </div>
               <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={async () => {
-                    const base = useAppStore.getState().defaultDownloadDir;
-                    const picked = await open({
-                      directory: true,
-                      multiple: false,
-                      defaultPath: base ?? undefined,
-                    });
-                    if (!picked) return;
-                    const chosen = String(picked);
-                    // Remember as default if missing
-                    if (!base || base.trim().length === 0) {
-                      useAppStore.getState().setDefaultDownloadDir(chosen);
-                      try {
-                        const s = await nv.settings_get();
-                        const app = await s.unwrapOr(null as any);
-                        if (app) {
-                          await (
-                            await nv.settings_set({
-                              ...app,
-                              defaultDownloadDir: chosen,
-                            })
-                          ).unwrapOr(undefined);
-                        }
-                      } catch {}
-                    }
-                    await batch.batchDownload(chosen);
-                  }}
+                <Select
+                  value={batch.typeFilter}
+                  onValueChange={(
+                    v: "all" | "image" | "video" | "audio" | "doc" | "other",
+                  ) => batch.setTypeFilter(v)}
                 >
-                  Download selected
-                </Button>
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <Button variant="destructive" size="sm">
-                      Delete selected
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Delete Selected Files</DialogTitle>
-                      <DialogDescription>
-                        Are you sure you want to delete {batch.selectedCount}{" "}
-                        selected file(s)? This action cannot be undone.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
-                      <DialogClose asChild>
-                        <Button variant="outline">Cancel</Button>
-                      </DialogClose>
-                      <Button
-                        variant="destructive"
-                        onClick={async () => {
-                          await batch.deleteSelected();
-                        }}
-                      >
-                        Confirm Delete
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={batch.clearSelection}
+                  <SelectTrigger className="w-full" size="sm">
+                    <SelectValue placeholder="Type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Types</SelectItem>
+                    <SelectItem value="image">Images</SelectItem>
+                    <SelectItem value="video">Videos</SelectItem>
+                    <SelectItem value="audio">Audio</SelectItem>
+                    <SelectItem value="doc">Documents</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={batch.timeFilter}
+                  onValueChange={(v: "any" | "24h" | "7d" | "30d") =>
+                    batch.setTimeFilter(v)
+                  }
                 >
-                  Clear
-                </Button>
+                  <SelectTrigger className="w-32" size="sm">
+                    <SelectValue placeholder="Uploaded" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="any">Any time</SelectItem>
+                    <SelectItem value="24h">Last 24h</SelectItem>
+                    <SelectItem value="7d">Last 7 days</SelectItem>
+                    <SelectItem value="30d">Last 30 days</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Min size (MB)"
+                  value={batch.minSizeMB}
+                  onChange={(e) => batch.setMinSizeMB(e.target.value)}
+                />
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Max size (MB)"
+                  value={batch.maxSizeMB}
+                  onChange={(e) => batch.setMaxSizeMB(e.target.value)}
+                />
               </div>
             </div>
-          )}
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground text-xs">Sort</span>
+                <Select
+                  value={(batch.sortBy ?? "uploadedAt") as any}
+                  onValueChange={(v: "name" | "size" | "uploadedAt" | "type") =>
+                    batch.setSortBy(v)
+                  }
+                >
+                  <SelectTrigger className="w-full" size="sm">
+                    <SelectValue placeholder="Sort" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="name">Name</SelectItem>
+                    <SelectItem value="size">Size</SelectItem>
+                    <SelectItem value="uploadedAt">Uploaded</SelectItem>
+                    <SelectItem value="type">Type</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground text-xs">Order</span>
+                <Select
+                  value={batch.sortOrder}
+                  onValueChange={(v: "asc" | "desc") => batch.setSortOrder(v)}
+                >
+                  <SelectTrigger className="w-full" size="sm">
+                    <SelectValue placeholder="Order" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="asc">Ascending</SelectItem>
+                    <SelectItem value="desc">Descending</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+        <FileMultiSelectTooltip
+          selectedFiles={batch.getSelectedFiles()}
+          onSelectAll={() => batch.selectAll()}
+          onDeselectAll={() => batch.deselectAll()}
+        />
+        <Separator className="my-2" />
 
-          {/* Desktop table */}
-          <div className="hidden w-full min-w-0 shrink md:!flex">
-            <Table className="w-full min-w-0">
-              <TableHeader className="m-auto">
-                <TableRow>
-                  <TableHead className="w-10">
-                    <input
-                      type="checkbox"
-                      aria-label="Select all"
-                      className="size-4 cursor-pointer"
-                      checked={batch.allVisibleSelected}
-                      onChange={batch.toggleAllVisible}
-                    />
-                  </TableHead>
-                  <TableHead
-                    onClick={() => toggleSort("name")}
-                    className="cursor-pointer select-none"
-                    aria-sort={
-                      sortBy === "name"
-                        ? sortOrder === "asc"
-                          ? "ascending"
-                          : "descending"
-                        : "none"
-                    }
-                  >
-                    <div className="flex items-center gap-1">
-                      File {renderSortIcon("name")}
-                    </div>
-                  </TableHead>
-                  <TableHead
-                    onClick={() => toggleSort("size")}
-                    className="m-auto cursor-pointer select-none"
-                    aria-sort={
-                      sortBy === "size"
-                        ? sortOrder === "asc"
-                          ? "ascending"
-                          : "descending"
-                        : "none"
-                    }
-                  >
-                    <div className="flex items-center gap-1">
-                      Size {renderSortIcon("size")}
-                    </div>
-                  </TableHead>
-                  <TableHead
-                    onClick={() => toggleSort("uploadedAt")}
-                    className="m-auto hidden cursor-pointer select-none lg:table-cell"
-                    aria-sort={
-                      sortBy === "uploadedAt"
-                        ? sortOrder === "asc"
-                          ? "ascending"
-                          : "descending"
-                        : "none"
-                    }
-                  >
-                    <div className="flex items-center gap-1">
-                      Uploaded {renderSortIcon("uploadedAt")}
-                    </div>
-                  </TableHead>
-                  <TableHead className="text-center">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {pagedFiles.map((file, index) => (
-                  <DesktopFileItem
-                    key={file.id}
-                    index={index}
-                    file={file}
-                    selected={batch.selectedIds.has(file.id)}
-                    onSelect={() => batch.toggleOne(file.id)}
-                    onDownload={() => openDownload(file)}
-                    onMoreClick={(p) => openMenuAt(p, file)}
-                    onDelete={() => handleDeleteClick(file)}
-                  />
-                ))}
-              </TableBody>
-            </Table>
+        {/* desktop batch actions tooltip */}
+        {batch.selectedCount > 0 && (
+          <div className="mb-3 hidden items-center justify-between rounded-md border p-2 md:flex">
+            <div className="text-sm">
+              <span className="font-medium">{batch.selectedCount}</span>
+              selected
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="cursor-pointer text-xs"
+                onClick={async () => {
+                  const base = useAppStore.getState().defaultDownloadDir;
+                  const picked = await open({
+                    directory: true,
+                    multiple: false,
+                    defaultPath: base ?? undefined,
+                  });
+                  if (!picked) return;
+                  const chosen = String(picked);
+                  // Remember as default if missing
+                  if (!base || base.trim().length === 0) {
+                    useAppStore.getState().setDefaultDownloadDir(chosen);
+                    try {
+                      const s = await nv.settings_get();
+                      const app = await s.unwrapOr(null as any);
+                      if (app) {
+                        await (
+                          await nv.settings_set({
+                            ...app,
+                            defaultDownloadDir: chosen,
+                          })
+                        ).unwrapOr(undefined);
+                      }
+                    } catch {}
+                  }
+                  await batch.batchDownload(chosen);
+                }}
+              >
+                Download
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="p-1"
+                onClick={() => setMultiDeleteOpen(true)}
+              >
+                <span className="cursor-pointer text-xs">Delete</span>
+              </Button>
+              <Button variant="ghost" size="sm" onClick={batch.clearSelection}>
+                Clear
+              </Button>
+            </div>
           </div>
+        )}
 
-          {/* Mobile list */}
-          <div className="space-y-2 md:!hidden">
-            {pagedFiles.map((file) => (
+        {/* Desktop table */}
+        <div className="hidden w-full min-w-0 shrink md:!flex">
+          <Table className="w-full min-w-0">
+            <TableHeader className="m-auto">
+              <TableRow>
+                <TableHead className="w-10">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all"
+                    className="size-4 cursor-pointer"
+                    checked={batch.allVisibleSelected}
+                    onChange={batch.toggleAllVisible}
+                  />
+                </TableHead>
+                <TableHead
+                  onClick={() => batch.toggleSort("name")}
+                  className="cursor-pointer select-none"
+                  aria-sort={
+                    batch.sortBy === "name"
+                      ? batch.sortOrder === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : "none"
+                  }
+                >
+                  <div className="flex items-center gap-1">
+                    File {renderSortIcon("name")}
+                  </div>
+                </TableHead>
+                <TableHead
+                  onClick={() => batch.toggleSort("size")}
+                  className="m-auto cursor-pointer select-none"
+                  aria-sort={
+                    batch.sortBy === "size"
+                      ? batch.sortOrder === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : "none"
+                  }
+                >
+                  <div className="flex items-center gap-1">
+                    Size {renderSortIcon("size")}
+                  </div>
+                </TableHead>
+                <TableHead
+                  onClick={() => batch.toggleSort("uploadedAt")}
+                  className="m-auto hidden cursor-pointer select-none lg:table-cell"
+                  aria-sort={
+                    batch.sortBy === "uploadedAt"
+                      ? batch.sortOrder === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : "none"
+                  }
+                >
+                  <div className="flex items-center gap-1">
+                    Uploaded {renderSortIcon("uploadedAt")}
+                  </div>
+                </TableHead>
+                <TableHead className="text-center">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {batch.pageFiles.map((file, index) => (
+                <DesktopFileItem
+                  key={file.id}
+                  index={index}
+                  file={file}
+                  selected={batch.selectedIds.has(file.id)}
+                  onSelect={() => batch.toggleOne(file.id)}
+                  onDownload={() => openDownload(file)}
+                  onMoreClick={(p) => openMenuAt(p, file)}
+                  onDelete={() => handleDeleteClick(file)}
+                />
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+
+        {/* Mobile list */}
+        <div
+          id="mobile-file-container-wrapper"
+          className="md:!hiddenshrink max-h-4/5 min-h-0 overflow-y-auto"
+        >
+          <div className="space-y-2">
+            {batch.pageFiles.map((file) => (
               <FileItem
                 key={file.id}
                 file={file}
@@ -679,63 +519,52 @@ export const FileList = ({ files }: FileListProps) => {
               />
             ))}
           </div>
+        </div>
 
-          {/* Pagination Controls */}
-          <div className="mt-4 flex items-center justify-center">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
-              >
-                {"<"}
-              </Button>
-              <span className="text-xs">
-                Page {page} of {totalPages}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
-              >
-                {">"}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </div>
-
-      {/* delete dialog */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete File</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete "{fileToDelete?.filename}"? This
-              action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+        {/* Pagination Controls */}
+        <div className="flex items-center justify-center pt-2">
+          <div className="flex items-center gap-2">
             <Button
               variant="outline"
-              onClick={() => setDeleteDialogOpen(false)}
-              disabled={isDeleting}
+              size="sm"
+              onClick={() => batch.prevPage()}
+              disabled={batch.page <= 1}
             >
-              Cancel
+              {"<"}
             </Button>
+            <span className="text-xs">
+              Page {batch.page} of {batch.totalPages}
+            </span>
             <Button
-              variant="destructive"
-              onClick={handleDeleteConfirm}
-              disabled={isDeleting}
+              variant="outline"
+              size="sm"
+              onClick={() => batch.nextPage()}
+              disabled={batch.page >= batch.totalPages}
             >
-              {isDeleting ? "Deleting..." : "Delete"}
+              {">"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
+          </div>
+        </div>
+      </CardContent>
+      {/*  delete dialog */}
+      {fileToDelete && (
+        <DeleteSingleFileDialog
+          open={deleteDialogOpen}
+          onOpenChange={setDeleteDialogOpen}
+          file={fileToDelete}
+          onConfirm={async () => {
+            await batch.deleteSelectedOrByFileId(fileToDelete.id);
+          }}
+        />
+      )}
+      <DeleteMultiFileDialog
+        open={multiDeleteOpen}
+        onOpenChange={setMultiDeleteOpen}
+        count={batch.selectedCount}
+        onConfirm={async () => {
+          await batch.deleteSelectedOrByFileId();
+        }}
+      />
       {/* Shared menu popover */}
       <FileItemPopOverMenu
         open={menuOpen}
@@ -755,7 +584,6 @@ export const FileList = ({ files }: FileListProps) => {
         }}
         anchorPoint={menuAnchor ?? undefined}
       />
-
       {/* Share dialog */}
       {activeFile && (
         <FileShareDialog
@@ -764,7 +592,6 @@ export const FileList = ({ files }: FileListProps) => {
           onOpenChange={setShareOpen}
         />
       )}
-
       {/* Details dialog */}
       {activeFile && (
         <FileDetailsDialog
@@ -773,8 +600,40 @@ export const FileList = ({ files }: FileListProps) => {
           onOpenChange={setDetailsOpen}
         />
       )}
-
-      {/* Download dialog removed */}
+      <FileDownloadDeleteTooltip
+        selectedFiles={batch.getSelectedFiles()}
+        onDownloadAll={async () => {
+          const { useAppStore } = await import("@/store/app-store");
+          const base = useAppStore.getState().defaultDownloadDir;
+          const picked = await open({
+            directory: true,
+            multiple: false,
+            defaultPath: base ?? undefined,
+          });
+          if (!picked) return;
+          const chosen = String(picked);
+          if (!base || base.trim().length === 0) {
+            useAppStore.getState().setDefaultDownloadDir(chosen);
+            try {
+              const s = await nv.settings_get();
+              const app = await s.unwrapOr(null as any);
+              if (app) {
+                await (
+                  await nv.settings_set({ ...app, defaultDownloadDir: chosen })
+                ).unwrapOr(undefined);
+              }
+            } catch {}
+          }
+          await batch.batchDownload(chosen);
+        }}
+        onDeleteAll={() => setMultiDeleteOpen(true)}
+        onShareAll={() => {}}
+      />
+      <FileMultiSelectTooltip
+        selectedFiles={batch.getSelectedFiles()}
+        onSelectAll={() => batch.selectAll()}
+        onDeselectAll={() => batch.deselectAll()}
+      />
     </div>
   );
 };

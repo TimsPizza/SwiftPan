@@ -128,17 +128,12 @@ export const MobileFileItem = ({
       <button
         id="thumbnail-container"
         className="relative ml-1 size-10 overflow-hidden rounded-full"
-        onPointerDown={(e) => {
+        onPointerDown={() => {
           onSelect(file);
         }}
         aria-pressed={!!selected}
         aria-label={selected ? "Selected" : "Select"}
       >
-        {/* Material-like ripple for touch / click */}
-        <span className="pointer-events-none absolute inset-0 overflow-hidden rounded-md">
-          {/* The ripple circle */}
-          <span className="ripple absolute top-1/2 left-1/2 h-0 w-0 -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/20 opacity-0 transition-[width,height,opacity] duration-300 ease-out" />
-        </span>
         <motion.div
           initial={false}
           animate={{ rotateY: selected ? 180 : 0 }}
@@ -162,8 +157,8 @@ export const MobileFileItem = ({
               </div>
             )}
           </div>
-          <div className="absolute inset-0 flex [transform:rotateY(180deg)] items-center justify-center bg-emerald-500 [backface-visibility:hidden]">
-            <Check className="h-5 w-5 text-white" />
+          <div className="absolute inset-0 flex [transform:rotateY(180deg)] items-center justify-center rounded-full border bg-white/10 backdrop-blur-3xl [backface-visibility:hidden] dark:bg-black/10">
+            <Check className="text-primary h-5 w-5" />
           </div>
         </motion.div>
       </button>
@@ -175,7 +170,7 @@ export const MobileFileItem = ({
           id="file-name"
           className="px-2 text-sm font-medium text-balance break-all"
         >
-          {truncateFilename(file.filename, 14) ?? "unknown"}
+          {truncateFilename(file.filename, 11) ?? "unknown"}
         </p>
         <Badge
           id="file-modified-time"

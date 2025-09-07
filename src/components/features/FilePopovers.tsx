@@ -222,6 +222,13 @@ export const FileDetailsDialog = ({
             id="file-created-at"
             className="flex items-center justify-between gap-1"
           >
+            <Label>File Name</Label>
+            <Badge variant="outline">{file.filename}</Badge>
+          </div>
+          <div
+            id="file-created-at"
+            className="flex items-center justify-between gap-1"
+          >
             <Label>Uploaded</Label>
             <Badge variant="outline">
               {formatRelativeTime(file.uploadedAt)}

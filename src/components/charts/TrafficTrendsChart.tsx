@@ -1,13 +1,11 @@
-import type { TrendPoint } from "@/hooks/use-trends";
 import { useMemo } from "react";
-import {
-  Area,
-  AreaChart,
-  Tooltip as RechartsTooltip,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-} from "recharts";
+import * as Recharts from "recharts";
+
+export interface TrendPoint {
+  date: string;
+  uploadBytes: number;
+  downloadBytes: number;
+}
 
 export interface TrafficTrendsChartProps {
   points: TrendPoint[];
@@ -23,11 +21,14 @@ export function TrafficTrendsChart({ points }: TrafficTrendsChartProps) {
   }, [points]);
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={data} margin={{ left: 0, right: 0, top: 10, bottom: 0 }}>
-        <XAxis dataKey="date" hide />
-        <YAxis hide />
-        <RechartsTooltip
+    <Recharts.ResponsiveContainer width="100%" height="100%">
+      <Recharts.AreaChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 10, bottom: 0 }}
+      >
+        <Recharts.XAxis dataKey="date" hide />
+        <Recharts.YAxis hide />
+        <Recharts.Tooltip
           formatter={(value: any, name: string) => {
             if (name === "uploadMB")
               return [`${value as number} MB`, "Upload MB"];
@@ -36,21 +37,21 @@ export function TrafficTrendsChart({ points }: TrafficTrendsChartProps) {
             return [value, name];
           }}
         />
-        <Area
+        <Recharts.Area
           type="monotone"
           dataKey="uploadMB"
           stroke="#6b7280"
           fill="#6b7280"
           fillOpacity={0.15}
         />
-        <Area
+        <Recharts.Area
           type="monotone"
           dataKey="downloadMB"
           stroke="#0ea5e9"
           fill="#0ea5e9"
           fillOpacity={0.15}
         />
-      </AreaChart>
-    </ResponsiveContainer>
+      </Recharts.AreaChart>
+    </Recharts.ResponsiveContainer>
   );
 }

@@ -42,10 +42,10 @@ export function formatRelativeTime(ts: number | Date): string {
   return `${d}d ago`;
 }
 
-export function formatRelativeTimeFuture(ts: number | Date): string {
+export function formatRelativeTimeFuture(ts: number): string {
   const now = Date.now();
-  const t = ts instanceof Date ? ts.getTime() : ts;
-  const diff = Math.floor((t - now) / 1000);
+  if (ts < now) return "Expired";
+  const diff = Math.floor((ts - now) / 1000);
   if (diff < 60) return `${diff}s`;
   const m = Math.floor(diff / 60);
   if (m < 60) return `${m}m`;

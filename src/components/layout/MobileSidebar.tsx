@@ -33,7 +33,7 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div
       id="mobile-sidebar-container"
-      className="text-foreground border-sidebar-border bg-background mt-7 flex h-full w-[224px] flex-col py-3 pr-3"
+      className="text-foreground border-sidebar-border bg-background flex h-full w-[224px] flex-col py-3 pr-3"
     >
       <div className="flex items-center gap-3 px-2">
         <DashboardIcon className="h-5 w-5" />
