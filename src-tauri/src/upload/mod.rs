@@ -204,6 +204,14 @@ pub async fn start_upload_stream(
                     transfer_id: id_spawn.clone(),
                 },
             );
+            // Note: streaming uploads currently do not support auto-uploading local thumbnails.
+            // If the setting is enabled, emit a warning so users/devs know why nothing happens.
+            if settings::get().upload_thumbnail {
+                crate::logger::warn(
+                    "sp.backend",
+                    "upload_thumbnail=true; streaming mode does not auto-upload thumbnails",
+                );
+            }
             let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
             let client = r2_client::build_client(&bundle.r2).await?;
             let mut writer = client.op.writer(&params.key).await.map_err(|e| SpError {
@@ -380,12 +388,24 @@ async fn run_upload(
                 let thumb_name = format!("thumbnail_{}.jpg", src_basename);
                 crate::logger::info(
                     "sp.backend",
-                    &format!("trying to upload thumbnain: thumb_name: {}", thumb_name),
+                    &format!(
+                        "upload_thumbnail=true; looking for local thumbnail '{}'",
+                        thumb_name
+                    ),
                 );
                 let p = dir.join(thumb_name);
                 match tokio::fs::metadata(&p).await {
                     Ok(m) if m.is_file() => Some(p.to_string_lossy().to_string()),
-                    _ => None,
+                    _ => {
+                        crate::logger::info(
+                            "sp.backend",
+                            &format!(
+                                "local thumbnail not found; skipping (path: {})",
+                                p.display()
+                            ),
+                        );
+                        None
+                    }
                 }
             } else {
                 crate::logger::error(
