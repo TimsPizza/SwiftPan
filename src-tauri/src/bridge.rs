@@ -387,7 +387,7 @@ pub async fn list_all_objects(max_total: Option<i32>) -> SpResult<Vec<crate::typ
 }
 
 #[tauri::command]
-pub async fn delete_object(key: String) -> SpResult<()> {
+pub async fn delete_object(key: String) -> SpResult<String> {
     if key.starts_with(crate::types::ANALYTICS_PREFIX) {
         return Err(SpError {
             kind: ErrorKind::NotRetriable,

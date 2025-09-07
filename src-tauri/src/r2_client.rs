@@ -373,7 +373,7 @@ pub async fn list_all_objects_flat(
     Ok(items)
 }
 
-pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<()> {
+pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<String> {
     // Best-effort HEAD to capture size
     let size_opt = client.op.stat(key).await.ok().map(|m| m.content_length());
     client.op.delete(key).await.map_err(|e| {
@@ -395,7 +395,7 @@ pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<()> {
         added_storage_bytes: 0,
         deleted_storage_bytes: size_opt.unwrap_or(0),
     });
-    Ok(())
+    Ok(key.to_string())
 }
 
 pub async fn get_object_bytes(client: &R2Client, key: &str) -> SpResult<(Vec<u8>, Option<String>)> {

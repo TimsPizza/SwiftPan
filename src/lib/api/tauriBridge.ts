@@ -139,7 +139,7 @@ export const nv = {
         protected: boolean;
       }[]
     >("list_all_objects", { maxTotal }),
-  delete_object: (key: string) => resultInvoke<void>("delete_object", { key }),
+  delete_object: (key: string) => resultInvoke<string>("delete_object", { key }),
   share_generate: (params: {
     key: string;
     ttl_secs: number;
