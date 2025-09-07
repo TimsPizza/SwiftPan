@@ -340,12 +340,23 @@ async function ensureBridgeOnce() {
     if (tail) useLogStore.getState().setAll(String(tail).split("\n"));
   } catch {}
 
-  // Load app settings to seed default download directory
+  // Load app settings to seed store
   try {
     const s = await nv.settings_get().unwrapOr(undefined as any);
-    const dir = s?.defaultDownloadDir as string | undefined;
-    if (dir && String(dir).trim().length > 0) {
-      useAppStore.getState().setDefaultDownloadDir(String(dir).trim());
+    if (s && typeof s === "object") {
+      useAppStore.getState().setSettings({
+        logLevel: String((s as any).logLevel ?? "info"),
+        maxConcurrency: Number((s as any).maxConcurrency ?? 2),
+        defaultDownloadDir:
+          (s as any).defaultDownloadDir != null
+            ? String((s as any).defaultDownloadDir)
+            : null,
+        uploadThumbnail: Boolean((s as any).uploadThumbnail ?? false),
+        androidTreeUri:
+          (s as any).androidTreeUri != null
+            ? String((s as any).androidTreeUri)
+            : null,
+      });
     }
   } catch {}
 

@@ -251,8 +251,10 @@ export const nv = {
     }>("log_get_status"),
   ui_status_bar_height: () => resultInvoke<number>("ui_status_bar_height"),
   // Android SAF (Storage Access Framework) APIs
-  android_pick_download_dir: () => resultInvoke<string>("android_pick_download_dir"),
-  android_get_persisted_download_dir: () => resultInvoke<string | null>("android_get_persisted_download_dir"),
+  android_pick_download_dir: () =>
+    resultInvoke<string>("android_pick_download_dir"),
+  android_get_persisted_download_dir: () =>
+    resultInvoke<string | null>("android_get_persisted_download_dir"),
   android_copy_from_path_to_tree: (params: {
     src_path: string;
     tree_uri: string;
@@ -273,7 +275,10 @@ export async function applyStatusBarInsetFromNative() {
 
     // Also consider current visual viewport offset as a sanity check.
     const vv: any = (globalThis as any).visualViewport;
-    const vvTop = vv && typeof vv.offsetTop === "number" ? Math.max(0, Math.round(vv.offsetTop)) : 0;
+    const vvTop =
+      vv && typeof vv.offsetTop === "number"
+        ? Math.max(0, Math.round(vv.offsetTop))
+        : 0;
 
     // Keep the max of: previous value, vvTop, and native-derived value.
     const prevStr = getComputedStyle(document.documentElement)

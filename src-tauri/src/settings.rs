@@ -1,6 +1,7 @@
 use crate::types::*;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -14,6 +15,12 @@ pub struct AppSettings {
     pub upload_thumbnail: bool,
     // Android only: persisted Storage Access Framework Tree-URI
     pub android_tree_uri: Option<String>,
+}
+
+impl Display for AppSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AppSettings {{ log_level: {}, max_concurrency: {}, default_download_dir: {:?}, upload_thumbnail: {}, android_tree_uri: {:?} }}", self.log_level, self.max_concurrency, self.default_download_dir, self.upload_thumbnail, self.android_tree_uri)
+    }
 }
 
 impl Default for AppSettings {
@@ -54,6 +61,10 @@ fn save_to_disk(s: &AppSettings) -> SpResult<()> {
     if let Some(parent) = p.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    crate::logger::info(
+        "settings",
+        &format!("saving settings {} to: {}", s, p.display()),
+    );
     let data = serde_json::to_vec_pretty(s).map_err(|e| SpError {
         kind: ErrorKind::NotRetriable,
         message: format!("serialize settings failed: {e}"),
@@ -67,7 +78,9 @@ fn save_to_disk(s: &AppSettings) -> SpResult<()> {
         retry_after_ms: None,
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
-    })
+    })?;
+    crate::logger::info("sp_backend", "save_settings_to_disk ok");
+    Ok(())
 }
 
 pub fn init() -> SpResult<()> {
@@ -88,6 +101,7 @@ pub fn get() -> AppSettings {
 }
 
 pub fn set(new_settings: AppSettings) -> SpResult<()> {
+    crate::logger::info("settings", &format!("setting settings {}", new_settings));
     if let Some(lock) = SETTINGS.get() {
         {
             let mut g = lock.lock().unwrap_or_else(|p| p.into_inner());

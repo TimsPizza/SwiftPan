@@ -6,6 +6,7 @@ import {
   type SettingsFormValues,
 } from "@/lib/api/schemas";
 import { mutations, nv, queries } from "@/lib/api/tauriBridge";
+import { useAppStore } from "@/store/app-store";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useQueryClient } from "react-query";
@@ -13,19 +14,17 @@ import { toast } from "sonner";
 
 export default function SettingsPage() {
   const queryClient = useQueryClient();
-  const appSettingsQ = queries.useSettings();
-  const [logLevel, setLogLevel] = useState<string>(
-    appSettingsQ.data?.logLevel || "info",
-  );
-  const [maxConcurrency, setMaxConcurrency] = useState<number>(
-    appSettingsQ.data?.maxConcurrency || 2,
-  );
-  const [defaultDownloadDir, setDefaultDownloadDir] = useState<string>(
-    appSettingsQ.data?.defaultDownloadDir || "",
-  );
-  const [uploadThumbnail, setUploadThumbnail] = useState<boolean>(
-    appSettingsQ.data?.uploadThumbnail ?? false,
-  );
+  // App settings via store (populated by EventBridge)
+  const {
+    logLevel,
+    maxConcurrency,
+    defaultDownloadDir,
+    uploadThumbnail,
+    setLogLevel,
+    setMaxConcurrency,
+    setDefaultDownloadDir,
+    setUploadThumbnail,
+  } = useAppStore();
   const {
     register,
     handleSubmit,
@@ -241,8 +240,8 @@ export default function SettingsPage() {
               <input
                 className="w-full rounded border px-2 py-1"
                 placeholder="/path/to/downloads"
-                value={defaultDownloadDir}
-                onChange={(e) => setDefaultDownloadDir(e.target.value)}
+                value={defaultDownloadDir || ""}
+                onChange={(e) => setDefaultDownloadDir(e.target.value || null)}
               />
               <Button
                 type="button"
@@ -261,8 +260,8 @@ export default function SettingsPage() {
             <div>
               <Switch
                 id="upload-thumb"
-                checked={uploadThumbnail}
-                onCheckedChange={() => setUploadThumbnail((prev) => !prev)}
+                checked={!!uploadThumbnail}
+                onCheckedChange={() => setUploadThumbnail(!uploadThumbnail)}
               />
             </div>
             <div className="flex gap-2">
