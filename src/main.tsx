@@ -1,3 +1,4 @@
+import { applyStatusBarInsetFromNative } from "@/lib/api/tauriBridge";
 import "@/styles/globals.css";
 import "@/styles/tailwind.css";
 import React from "react";
@@ -20,3 +21,6 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     </QueryClientProvider>
   </React.StrictMode>,
 );
+
+// Kick native inset fetch post-hydration to refine value and persist
+applyStatusBarInsetFromNative();

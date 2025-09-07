@@ -5,6 +5,10 @@ import { useTransferStore } from "@/store/transfer-store";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+// Detect if running on Android
+const isAndroid = typeof window !== "undefined" && 
+  /Android/i.test(window.navigator?.userAgent || "");
+
 export interface UseFileBatchActionReturn {
   allFiles: File[];
   // pagination
@@ -37,6 +41,7 @@ export interface UseFileBatchActionReturn {
   toggleAllVisible: () => void;
   clearSelection: () => void;
   batchDownload: (destBase?: string) => Promise<void>;
+  batchDownloadAndroid: () => Promise<void>;
   deleteSelectedOrByFileId: (
     id?: string,
   ) => Promise<{ successIds: string[]; failedIds: string[] }>;
@@ -385,6 +390,109 @@ export const useFileBatchAction = (
     },
     [resolveBase],
   );
+
+  // Android-specific batch download using SAF
+  const batchDownloadAndroid = useCallback(async () => {
+    if (!isAndroid) {
+      toast.error("This function is only available on Android");
+      return;
+    }
+
+    const targets: File[] = Array.from(selectedIds)
+      .map((id) => idToFile.get(id))
+      .filter(Boolean) as File[];
+
+    if (targets.length === 0) {
+      toast.error("No files selected");
+      return;
+    }
+
+    try {
+      // Check if we have a persisted tree URI
+      let treeUri = await (await nv.android_get_persisted_download_dir()).unwrapOr(null);
+      
+      if (!treeUri) {
+        // First time: let user pick directory
+        toast.info("Please select download directory (one-time setup)");
+        const result = await nv.android_pick_download_dir();
+        treeUri = await result.unwrapOr(null);
+        if (!treeUri) {
+          toast.error("Failed to select download directory");
+          return;
+        }
+        toast.success("Download directory configured successfully");
+      }
+
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const file of targets) {
+        try {
+          // First download to sandbox
+          const sandboxResult = await nv.download_sandbox_dir();
+          const sandboxPath = await sandboxResult.unwrapOr(null);
+          if (!sandboxPath) {
+            throw new Error("Failed to get sandbox directory");
+          }
+          
+          const localPath = `${sandboxPath}/${file.id}`;
+          
+          // Download to sandbox first
+          const downloadResult = await nv.download_new({
+            key: file.id,
+            dest_path: localPath,
+            chunk_size: 4 * 1024 * 1024,
+          });
+
+          await downloadResult.match(
+            async () => {
+              // Wait for download to complete (simplified - in real app you'd listen to events)
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              // Copy from sandbox to SAF tree
+              const copyResult = await nv.android_copy_from_path_to_tree({
+                src_path: localPath,
+                tree_uri: treeUri!,
+                relative_path: file.filename || `download_${file.id}`,
+                mime: undefined,
+              });
+              
+              await copyResult.match(
+                () => {
+                  successCount++;
+                  toast.success(`Downloaded: ${file.filename}`);
+                },
+                (error) => {
+                  failCount++;
+                  toast.error(`Failed to copy ${file.filename}: ${error}`);
+                }
+              );
+            },
+            (error) => {
+              failCount++;
+              toast.error(`Failed to download ${file.filename}: ${error}`);
+            }
+          );
+
+          // Small delay to avoid overwhelming the system
+          await new Promise(resolve => setTimeout(resolve, 200));
+        } catch (error) {
+          failCount++;
+          toast.error(`Error downloading ${file.filename}: ${error}`);
+        }
+      }
+
+      if (successCount > 0) {
+        toast.success(`Successfully downloaded ${successCount} files`);
+      }
+      if (failCount > 0) {
+        toast.error(`Failed to download ${failCount} files`);
+      }
+    } catch (error) {
+      toast.error(`Batch download failed: ${error}`);
+    }
+  }, [selectedIds, idToFile]);
+
   // if id is provided, delete only that file
   // if id is not provided, delete all selected files
   const deleteSelectedOrByFileId = useCallback(
@@ -469,6 +577,7 @@ export const useFileBatchAction = (
     toggleAllVisible,
     clearSelection,
     batchDownload,
+    batchDownloadAndroid,
     deleteSelectedOrByFileId,
     getSelectedFiles,
     downloadOne,

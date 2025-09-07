@@ -12,6 +12,8 @@ pub struct AppSettings {
     pub max_concurrency: u32,
     pub default_download_dir: Option<String>,
     pub upload_thumbnail: bool,
+    // Android only: persisted Storage Access Framework Tree-URI
+    pub android_tree_uri: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -21,6 +23,7 @@ impl Default for AppSettings {
             max_concurrency: 2,
             default_download_dir: None,
             upload_thumbnail: false,
+            android_tree_uri: None,
         }
     }
 }

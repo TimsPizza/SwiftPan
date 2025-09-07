@@ -4,6 +4,8 @@ use crate::share::{ShareLink, ShareParams};
 use crate::sp_backend::{BackendState as BackendStatus, CredentialBundle, SpBackend};
 use crate::types::*;
 use crate::upload::{NewUploadParams, NewUploadStreamParams, UploadStatus};
+#[cfg(target_os = "android")]
+use tauri_plugin_android_fs::{AndroidFsExt as _, FileUri};
 use tokio::io::AsyncWriteExt;
 
 // Backend status (replaces vault_status)
@@ -15,6 +17,153 @@ pub async fn backend_status() -> SpResult<BackendStatus> {
         Err(e) => crate::logger::info("bridge", &format!("backend_status err: {}", e.message)),
     }
     r
+}
+
+// Let user pick a directory (one-time), save the Tree-URI persistently
+#[tauri::command]
+pub async fn android_pick_download_dir(app: tauri::AppHandle) -> SpResult<String> {
+    #[cfg(target_os = "android")]
+    {
+        use tauri_plugin_android_fs::AndroidFsExt as _;
+
+        let api = app.android_fs();
+        let tree_uri = api.show_open_document_tree().await.map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("show_open_document_tree failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+
+        // Save to persistent settings
+        let mut settings = crate::settings::get();
+        settings.android_tree_uri = Some(tree_uri.clone());
+        crate::settings::set(settings).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("save tree_uri to settings failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+
+        crate::logger::info("bridge", &format!("android tree_uri saved: {}", tree_uri));
+        return Ok(tree_uri);
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = app;
+        Err(err_not_implemented("android_pick_download_dir"))
+    }
+}
+
+// Return the stored Tree-URI if available
+#[tauri::command]
+pub async fn android_get_persisted_download_dir(
+    _app: tauri::AppHandle,
+) -> SpResult<Option<String>> {
+    Ok(crate::settings::get().android_tree_uri.clone())
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AndroidCopyParams {
+    pub src_path: String,      // absolute local path in sandbox
+    pub tree_uri: String,      // content://.../tree/...
+    pub relative_path: String, // e.g. "dir1/dir2/file.bin"
+    pub mime: Option<String>,
+}
+
+// Copy one local file to the SAF tree location, creating parent dirs if needed
+#[tauri::command]
+pub async fn android_copy_from_path_to_tree(
+    app: tauri::AppHandle,
+    params: AndroidCopyParams,
+) -> SpResult<()> {
+    #[cfg(target_os = "android")]
+    {
+        use std::io::{BufReader, Read, Write};
+        use std::str::FromStr;
+
+        let api = app.android_fs();
+        let base = FileUri::from_str(&params.tree_uri).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("tree uri parse: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+
+        // ensure parent dirs
+        if let Some(parent) = std::path::Path::new(&params.relative_path).parent() {
+            let parent_rel = parent.to_string_lossy();
+            api.create_dir_all(&base, parent_rel.as_ref())
+                .map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("create_dir_all: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+        }
+
+        // create file
+        let file_uri = api
+            .create_file(&base, &params.relative_path, params.mime.as_deref())
+            .map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("create_file: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+
+        // open writable stream
+        let mut ws = api.open_writable_stream(&file_uri).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("open_writable_stream: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+
+        // read src and copy
+        let f = std::fs::File::open(&params.src_path).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("open src {}: {e}", &params.src_path),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        let mut br = BufReader::new(f);
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = br.read(&mut buf).map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("read: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+            if n == 0 {
+                break;
+            }
+            ws.write_all(&buf[..n]).map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("write: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+        }
+        // drop ws to close
+        drop(ws);
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = app;
+        let _ = params;
+        Err(err_not_implemented("android_copy_from_path_to_tree"))
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -479,4 +628,293 @@ pub async fn delete_object(key: String) -> SpResult<String> {
         );
     }
     res
+}
+
+// UI helpers
+#[tauri::command]
+pub async fn ui_status_bar_height() -> SpResult<i32> {
+    // -------------------------
+    // ANDROID
+    // -------------------------
+    #[cfg(target_os = "android")]
+    {
+        use jni::objects::{JClass, JObject, JValue};
+        use jni::JavaVM;
+
+        unsafe {
+            let ctx = ndk_context::android_context();
+            let vm_ptr = ctx.vm();
+            let ctx_obj = ctx.context();
+            if vm_ptr.is_null() || ctx_obj.is_null() {
+                return Ok(0);
+            }
+
+            // 附加当前线程（不要去销毁 VM；AttachGuard 退出时自动 detach）
+            let vm = JavaVM::from_raw(vm_ptr as *mut _)
+                .map_err(|_| ())
+                .unwrap_or_else(|_| unreachable!());
+            let env = match vm.attach_current_thread() {
+                Ok(e) => e,
+                Err(_) => return Ok(0),
+            };
+
+            // ndk_context 给的是全局引用；转本地引用避免乱删
+            let context_glob = JObject::from_raw(ctx_obj as jni::sys::jobject);
+            let context = match env.new_local_ref(&context_glob) {
+                Ok(o) => JObject::from(o),
+                Err(_) => return Ok(0),
+            };
+
+            // SDK_INT
+            let version_cls: JClass = match env.find_class("android/os/Build$VERSION") {
+                Ok(c) => c,
+                Err(_) => return Ok(0),
+            };
+            let sdk_int = env
+                .get_static_field(version_cls, "SDK_INT", "I")
+                .ok()
+                .and_then(|v| v.i().ok())
+                .unwrap_or(0);
+
+            // Activity → Window → DecorView
+            let is_activity = env
+                .is_instance_of(&context, "android/app/Activity")
+                .unwrap_or(false);
+            if !is_activity {
+                return Ok(status_bar_dimen_fallback(&env, &context)); // 兜底
+            }
+            let activity = context;
+
+            let window = env
+                .call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])
+                .ok()
+                .and_then(|v| v.l().ok());
+            let Some(window) = window else {
+                return Ok(status_bar_dimen_fallback(&env, &activity));
+            };
+
+            let decor = env
+                .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+                .ok()
+                .and_then(|v| v.l().ok());
+            let Some(decor) = decor else {
+                return Ok(status_bar_dimen_fallback(&env, &activity));
+            };
+
+            let insets = env
+                .call_method(
+                    &decor,
+                    "getRootWindowInsets",
+                    "()Landroid/view/WindowInsets;",
+                    &[],
+                )
+                .ok()
+                .and_then(|v| v.l().ok());
+            let Some(insets) = insets else {
+                return Ok(status_bar_dimen_fallback(&env, &activity));
+            };
+
+            // API >= 30：WindowInsets.getInsets(Type.statusBars|displayCutout).top
+            if sdk_int >= 30 {
+                let type_cls: JClass = match env.find_class("android/view/WindowInsets$Type") {
+                    Ok(c) => c,
+                    Err(_) => return Ok(status_bar_dimen_fallback(&env, &activity)),
+                };
+                let sb = env
+                    .call_static_method(type_cls, "statusBars", "()I", &[])
+                    .ok()
+                    .and_then(|v| v.i().ok())
+                    .unwrap_or(0);
+                let dc = env
+                    .call_static_method(type_cls, "displayCutout", "()I", &[])
+                    .ok()
+                    .and_then(|v| v.i().ok())
+                    .unwrap_or(0);
+                let mask = sb | dc;
+
+                let insets_obj = env
+                    .call_method(
+                        &insets,
+                        "getInsets",
+                        "(I)Landroid/graphics/Insets;",
+                        &[JValue::from(mask)],
+                    )
+                    .ok()
+                    .and_then(|v| v.l().ok());
+                if let Some(insets_obj) = insets_obj {
+                    let top = env
+                        .get_field(&insets_obj, "top", "I")
+                        .ok()
+                        .and_then(|v| v.i().ok())
+                        .unwrap_or(0);
+                    return Ok(top.max(0));
+                }
+                return Ok(status_bar_dimen_fallback(&env, &activity));
+            }
+
+            // 23..=29：getSystemWindowInsetTop()
+            if sdk_int >= 23 {
+                let top = env
+                    .call_method(&insets, "getSystemWindowInsetTop", "()I", &[])
+                    .ok()
+                    .and_then(|v| v.i().ok())
+                    .unwrap_or(0);
+                return Ok(if top > 0 {
+                    top
+                } else {
+                    status_bar_dimen_fallback(&env, &activity)
+                });
+            }
+
+            // 老系统兜底
+            return Ok(status_bar_dimen_fallback(&env, &activity));
+        }
+
+        // 兜底：读 "status_bar_height"
+        fn status_bar_dimen_fallback(env: &jni::JNIEnv, context: &JObject) -> i32 {
+            let resources = env
+                .call_method(
+                    context,
+                    "getResources",
+                    "()Landroid/content/res/Resources;",
+                    &[],
+                )
+                .ok()
+                .and_then(|v| v.l().ok());
+            let Some(resources) = resources else {
+                return 0;
+            };
+
+            let name = env.new_string("status_bar_height").ok();
+            let dimen = env.new_string("dimen").ok();
+            let pkg = env.new_string("android").ok();
+            let (Some(name), Some(dimen), Some(pkg)) = (name, dimen, pkg) else {
+                return 0;
+            };
+
+            let id = env
+                .call_method(
+                    &resources,
+                    "getIdentifier",
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
+                    &[
+                        JValue::Object(&JObject::from(name)),
+                        JValue::Object(&JObject::from(dimen)),
+                        JValue::Object(&JObject::from(pkg)),
+                    ],
+                )
+                .ok()
+                .and_then(|v| v.i().ok())
+                .unwrap_or(0);
+
+            if id <= 0 {
+                return 0;
+            }
+            env.call_method(
+                &resources,
+                "getDimensionPixelSize",
+                "(I)I",
+                &[JValue::from(id)],
+            )
+            .ok()
+            .and_then(|v| v.i().ok())
+            .unwrap_or(0)
+            .max(0)
+        }
+    }
+
+    // -------------------------
+    // iOS
+    // -------------------------
+    #[cfg(target_os = "ios")]
+    {
+        use objc::runtime::{Object, BOOL, YES};
+        use objc::{class, msg_send, sel, sel_impl};
+
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct CGSize {
+            width: f64,
+            height: f64,
+        }
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct CGRect {
+            origin: (f64, f64),
+            size: CGSize,
+        }
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct UIEdgeInsets {
+            top: f64,
+            left: f64,
+            bottom: f64,
+            right: f64,
+        }
+
+        unsafe {
+            // UIScreen.scale（把点转像素）
+            let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
+            let scale: f64 = if !screen.is_null() {
+                let s: f64 = msg_send![screen, scale];
+                if s > 0.0 {
+                    s
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+
+            // UIApplication.sharedApplication
+            let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
+
+            // iOS13+：优先从活跃 scene 的 keyWindow / windows 取 safeAreaInsets
+            let windows: *mut Object = msg_send![app, windows];
+            let has_windows: BOOL = msg_send![windows, count];
+            if has_windows as i32 > 0 {
+                let win: *mut Object = msg_send![windows, firstObject];
+                if !win.is_null() {
+                    // window.safeAreaInsets.top（单位：点）
+                    let insets: UIEdgeInsets = msg_send![win, safeAreaInsets];
+                    let px = (insets.top * scale).round() as i32;
+                    if px >= 0 {
+                        return Ok(px);
+                    }
+                }
+            }
+
+            // 退路：windowScene.statusBarManager.statusBarFrame.size.height（点）
+            // 尝试拿第一个 window 的 scene
+            if has_windows as i32 > 0 {
+                let win: *mut Object = msg_send![windows, firstObject];
+                if !win.is_null() {
+                    let scene: *mut Object = msg_send![win, windowScene];
+                    if !scene.is_null() {
+                        let sbm: *mut Object = msg_send![scene, statusBarManager];
+                        if !sbm.is_null() {
+                            let frame: CGRect = msg_send![sbm, statusBarFrame];
+                            let px = (frame.size.height * scale).round() as i32;
+                            if px >= 0 {
+                                return Ok(px);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 史前退路（可能为 0）：statusBarFrame（已废弃，但作为最后兜底）
+            let frame: CGRect = msg_send![app, statusBarFrame];
+            let px = (frame.size.height * scale).round() as i32;
+            return Ok(px.max(0));
+        }
+    }
+
+    // -------------------------
+    // 其它（桌面端）
+    // -------------------------
+    #[allow(unreachable_code)]
+    {
+        Ok(0)
+    }
 }

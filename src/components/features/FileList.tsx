@@ -274,7 +274,6 @@ export const FileList = ({ files }: FileListProps) => {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { useAppStore } = await import("@/store/app-store");
     const base = useAppStore.getState().defaultDownloadDir;
-    const isAndroid = /Android/i.test(navigator.userAgent || "");
     // If base unset, at least suggest filename so the dialog isn't blank
     const defaultPath =
       base && base.trim().length > 0
@@ -689,13 +688,30 @@ export const FileList = ({ files }: FileListProps) => {
         onDownloadAll={async () => {
           const { useAppStore } = await import("@/store/app-store");
           const base = useAppStore.getState().defaultDownloadDir;
-          const picked = await open({
-            directory: true,
-            multiple: false,
-            defaultPath: base ?? undefined,
-          });
-          if (!picked) return;
-          const chosen = String(picked);
+          const isAndroid = /Android/i.test(navigator.userAgent || "");
+          let chosen: string | null = null;
+          if (isAndroid) {
+            const first = batch.getSelectedFiles()[0];
+            if (!first) return;
+            const { save } = await import("@tauri-apps/plugin-dialog");
+            const defaultPath = base && base.trim().length > 0
+              ? `${base.replace(/[\\\/]$/, "")}/${first.filename}`
+              : first.filename;
+            const picked = await save({ defaultPath });
+            if (!picked) return;
+            const full = String(picked);
+            const idx = Math.max(full.lastIndexOf("/"), full.lastIndexOf("\\"));
+            chosen = idx >= 0 ? full.slice(0, idx) : full;
+          } else {
+            const picked = await open({
+              directory: true,
+              multiple: false,
+              defaultPath: base ?? undefined,
+            });
+            if (!picked) return;
+            chosen = String(picked);
+          }
+          if (!chosen) return;
           if (!base || base.trim().length === 0) {
             useAppStore.getState().setDefaultDownloadDir(chosen);
             try {

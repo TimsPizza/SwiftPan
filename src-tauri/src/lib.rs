@@ -3,6 +3,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // Android-specific FS via SAF (no-op on other platforms)
+        .plugin(tauri_plugin_android_fs::init())
+        // Persisted scope for Android SAF permissions
+        .plugin(tauri_plugin_persisted_scope::init())
         .invoke_handler(tauri::generate_handler![
             crate::settings::settings_get,
             crate::settings::settings_set,
@@ -39,6 +43,11 @@ pub fn run() {
             crate::bridge::list_objects,
             crate::bridge::list_all_objects,
             crate::bridge::delete_object,
+            crate::bridge::ui_status_bar_height,
+            // Android SAF helpers
+            crate::bridge::android_pick_download_dir,
+            crate::bridge::android_get_persisted_download_dir,
+            crate::bridge::android_copy_from_path_to_tree,
         ])
         .setup(|app| {
             // Initialize tracing-based file logger with simple rotation (4MB cap)

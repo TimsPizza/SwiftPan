@@ -249,7 +249,32 @@ export const nv = {
       file_path: string;
       file_size_bytes: number;
     }>("log_get_status"),
+  ui_status_bar_height: () => resultInvoke<number>("ui_status_bar_height"),
+  // Android SAF (Storage Access Framework) APIs
+  android_pick_download_dir: () => resultInvoke<string>("android_pick_download_dir"),
+  android_get_persisted_download_dir: () => resultInvoke<string | null>("android_get_persisted_download_dir"),
+  android_copy_from_path_to_tree: (params: {
+    src_path: string;
+    tree_uri: string;
+    relative_path: string;
+    mime?: string;
+  }) => resultInvoke<void>("android_copy_from_path_to_tree", { params }),
 };
+
+export async function applyStatusBarInsetFromNative() {
+  try {
+    const r = await nv.ui_status_bar_height();
+    console.log("[tauriBridge] fetched status bar height:", r);
+    const px = (await r.unwrapOr(0)) || 0;
+    const v = `${px}px`;
+    (globalThis as any).__SP_STATUS_BAR__ = px;
+    document.documentElement.style.setProperty("--fallback-top", v);
+    try { localStorage.setItem("sp:fallback-top", v); } catch {}
+    return px;
+  } catch {
+    return 0;
+  }
+}
 
 // React Query wrappers (minimal, non-breaking)
 export const queries = {
