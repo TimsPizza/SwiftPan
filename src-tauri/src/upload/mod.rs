@@ -215,12 +215,24 @@ pub async fn start_upload_stream(
             })?;
             let mut part_number: u32 = 1;
             while let Some(msg) = rx.recv().await {
-                if cancelled.load(Ordering::Relaxed) { break; }
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
                 while paused.load(Ordering::Relaxed) {
-                    emit_upload(&app_spawn, &UploadEvent::Paused { transfer_id: id_spawn.clone() });
+                    emit_upload(
+                        &app_spawn,
+                        &UploadEvent::Paused {
+                            transfer_id: id_spawn.clone(),
+                        },
+                    );
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
-                emit_upload(&app_spawn, &UploadEvent::Resumed { transfer_id: id_spawn.clone() });
+                emit_upload(
+                    &app_spawn,
+                    &UploadEvent::Resumed {
+                        transfer_id: id_spawn.clone(),
+                    },
+                );
                 match msg {
                     Some(bytes) => {
                         let n = bytes.len() as u64;
@@ -242,10 +254,20 @@ pub async fn start_upload_stream(
                             &app_spawn,
                             &UploadEvent::PartProgress {
                                 transfer_id: id_spawn.clone(),
-                                progress: crate::types::UploadPartProgress { part_number, bytes_transferred: n },
+                                progress: crate::types::UploadPartProgress {
+                                    part_number,
+                                    bytes_transferred: n,
+                                },
                             },
                         );
-                        emit_upload(&app_spawn, &UploadEvent::PartDone { transfer_id: id_spawn.clone(), part_number, etag: String::new() });
+                        emit_upload(
+                            &app_spawn,
+                            &UploadEvent::PartDone {
+                                transfer_id: id_spawn.clone(),
+                                part_number,
+                                etag: String::new(),
+                            },
+                        );
                         part_number += 1;
                     }
                     None => break,
@@ -258,9 +280,15 @@ pub async fn start_upload_stream(
                 context: None,
                 at: chrono::Utc::now().timestamp_millis(),
             })?;
-            emit_upload(&app_spawn, &UploadEvent::Completed { transfer_id: id_spawn.clone() });
+            emit_upload(
+                &app_spawn,
+                &UploadEvent::Completed {
+                    transfer_id: id_spawn.clone(),
+                },
+            );
             Ok::<(), SpError>(())
-        }.await;
+        }
+        .await;
         if let Err(e) = res {
             let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(t) = g.get_mut(&id_spawn) {
@@ -292,7 +320,13 @@ pub fn stream_write(id: &str, chunk: Vec<u8>) -> SpResult<()> {
         })?;
         Ok(())
     } else {
-        Err(SpError { kind: ErrorKind::NotRetriable, message: "not found".into(), retry_after_ms: None, context: None, at: chrono::Utc::now().timestamp_millis() })
+        Err(SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "not found".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })
     }
 }
 
@@ -314,7 +348,13 @@ pub fn stream_finish(id: &str) -> SpResult<()> {
         })?;
         Ok(())
     } else {
-        Err(SpError { kind: ErrorKind::NotRetriable, message: "not found".into(), retry_after_ms: None, context: None, at: chrono::Utc::now().timestamp_millis() })
+        Err(SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "not found".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })
     }
 }
 
@@ -338,12 +378,20 @@ async fn run_upload(
             let parent = std::path::Path::new(&params.source_path).parent();
             if let Some(dir) = parent {
                 let thumb_name = format!("thumbnail_{}.jpg", src_basename);
+                crate::logger::info(
+                    "sp.backend",
+                    &format!("trying to upload thumbnain: thumb_name: {}", thumb_name),
+                );
                 let p = dir.join(thumb_name);
                 match tokio::fs::metadata(&p).await {
                     Ok(m) if m.is_file() => Some(p.to_string_lossy().to_string()),
                     _ => None,
                 }
             } else {
+                crate::logger::error(
+                    "sp.backend",
+                    &format!("error getting thumbnail parent dir: {}", params.source_path),
+                );
                 None
             }
         }

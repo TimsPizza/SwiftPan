@@ -26,6 +26,11 @@
             if (vv && typeof vv.offsetTop === "number") {
               top = Math.max(0, Math.round(vv.offsetTop));
             }
+            // Never shrink below the last persisted value (if any)
+            if (saved && /px$/.test(saved)) {
+              var persisted = parseInt(saved, 10) || 0;
+              if (persisted > top) top = persisted;
+            }
             if (top === 0 && isAndroid) {
               // Heuristic default for Android overlay status bar
               top = 32;

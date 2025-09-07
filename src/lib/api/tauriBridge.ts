@@ -264,13 +264,31 @@ export const nv = {
 export async function applyStatusBarInsetFromNative() {
   try {
     const r = await nv.ui_status_bar_height();
-    console.log("[tauriBridge] fetched status bar height:", r);
-    const px = (await r.unwrapOr(0)) || 0;
-    const v = `${px}px`;
-    (globalThis as any).__SP_STATUS_BAR__ = px;
+    console.log("[tauriBridge] fetched status bar height (native px):", r);
+    // Native returns physical pixels on both Android (px) and iOS (points * scale).
+    // CSS expects logical pixels. Convert by dividing devicePixelRatio.
+    const nativePx = (await r.unwrapOr(0)) || 0;
+    const dpr = Math.max(1, (globalThis as any).devicePixelRatio || 1);
+    const cssPxFromNative = Math.max(0, Math.round(nativePx / dpr));
+
+    // Also consider current visual viewport offset as a sanity check.
+    const vv: any = (globalThis as any).visualViewport;
+    const vvTop = vv && typeof vv.offsetTop === "number" ? Math.max(0, Math.round(vv.offsetTop)) : 0;
+
+    // Keep the max of: previous value, vvTop, and native-derived value.
+    const prevStr = getComputedStyle(document.documentElement)
+      .getPropertyValue("--fallback-top")
+      .trim();
+    const prev = Number.parseInt(prevStr, 10) || 0;
+    const resolvedTop = Math.max(prev, vvTop, cssPxFromNative);
+
+    const v = `${resolvedTop}px`;
+    (globalThis as any).__SP_STATUS_BAR__ = resolvedTop;
     document.documentElement.style.setProperty("--fallback-top", v);
-    try { localStorage.setItem("sp:fallback-top", v); } catch {}
-    return px;
+    try {
+      localStorage.setItem("sp:fallback-top", v);
+    } catch {}
+    return resolvedTop;
   } catch {
     return 0;
   }
