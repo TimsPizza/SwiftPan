@@ -147,101 +147,58 @@ impl SpBackend {
     }
 
     pub fn patch_r2_config(patch: R2ConfigPatch) -> SpResult<()> {
-        // Load current bundle (from mem or disk)
-        let mut cur = Self::get_decrypted_bundle_if_unlocked()?;
+        // Load current bundle (from mem or disk). If vault doesn't exist yet, start from defaults
+        let mut cur = match Self::get_decrypted_bundle_if_unlocked() {
+            Ok(b) => b,
+            Err(e) => {
+                let dir = vault_dir()?;
+                let vault_exists = dir.join("vault.sp").exists();
+                if !vault_exists {
+                    // Start from an empty/default R2 config and apply patch below
+                    CredentialBundle {
+                        r2: R2Config {
+                            endpoint: String::new(),
+                            access_key_id: String::new(),
+                            secret_access_key: String::new(),
+                            bucket: String::new(),
+                            region: None,
+                        },
+                    }
+                } else {
+                    // If a vault exists but couldn't be read/decrypted, bubble up the error
+                    return Err(e);
+                }
+            }
+        };
         // Apply provided fields
-        if let Some(v) = patch.endpoint { cur.r2.endpoint = v; }
-        if let Some(v) = patch.access_key_id { cur.r2.access_key_id = v; }
-        if let Some(v) = patch.secret_access_key { cur.r2.secret_access_key = v; }
-        if let Some(v) = patch.bucket { cur.r2.bucket = v; }
-        if let Some(v) = patch.region { cur.r2.region = Some(v); }
+        if let Some(v) = patch.endpoint {
+            cur.r2.endpoint = v;
+        }
+        if let Some(v) = patch.access_key_id {
+            cur.r2.access_key_id = v;
+        }
+        if let Some(v) = patch.secret_access_key {
+            cur.r2.secret_access_key = v;
+        }
+        if let Some(v) = patch.bucket {
+            cur.r2.bucket = v;
+        }
+        if let Some(v) = patch.region {
+            cur.r2.region = Some(v);
+        }
         // Persist via existing set logic
         Self::set_with_plaintext(cur)
     }
-
-    pub fn test_connectivity(_master_password: &str) -> SpResult<()> {
-        // Will be implemented after R2 wiring; placeholder
-        Err(err_not_implemented("backend.test_connectivity"))
-    }
-
-    pub fn unlock(_master_password: &str, _hold_ms: u64) -> SpResult<()> {
-        let dir = vault_dir()?;
-        let pkg_bytes = fs::read(dir.join("vault.sp")).map_err(|e| SpError {
+    fn err_not_implemented(func: &str) -> SpError {
+        crate::logger::error("sp_backend", format!("{func} not implemented").as_str());
+        SpError {
             kind: ErrorKind::NotRetriable,
-            message: format!("read credentials file failed: {e}"),
+            message: format!("{func} not implemented"),
             retry_after_ms: None,
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        let pkg: BackendPackage = serde_json::from_slice(&pkg_bytes).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("parse credentials package failed: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        let key = load_or_create_device_key()?;
-        let cipher = XChaCha20Poly1305::new((&key).into());
-        let nonce = base64::engine::general_purpose::STANDARD_NO_PAD
-            .decode(pkg.nonce_b64.as_bytes())
-            .map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("decode nonce: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-        let ct = base64::engine::general_purpose::STANDARD_NO_PAD
-            .decode(pkg.ciphertext_b64.as_bytes())
-            .map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("decode ciphertext: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-        let pt = cipher
-            .decrypt((&*nonce).into(), ct.as_slice())
-            .map_err(|e| SpError {
-                kind: ErrorKind::RetryableAuth,
-                message: format!("decrypt failed (bad password?): {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-        let bundle: CredentialBundle = serde_json::from_slice(&pt).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("decode bundle json: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-
-        {
-            let mut guard = STATE.lock().map_err(|_| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: "backend state lock poisoned".into(),
-                retry_after_ms: None,
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-            guard.creds = Some(bundle);
         }
-        Ok(())
     }
-
-    pub fn lock() -> SpResult<()> {
-        let mut g = STATE.lock().map_err(|_| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "backend state lock poisoned".into(),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        g.creds = None;
-        Ok(())
-    }
-
     pub fn export_package(_master_password: &str) -> SpResult<BackendPackage> {
         Err(err_not_implemented("backend.export_package"))
     }

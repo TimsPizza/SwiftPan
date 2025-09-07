@@ -122,6 +122,7 @@ export const nv = {
     }),
   vault_status: () => resultInvoke("vault_status"),
   r2_sanity_check: () => resultInvoke("r2_sanity_check"),
+  // deprecated
   list_objects: (prefix = "", token?: string, max = 1000) =>
     resultInvoke<ListPage>("list_objects", {
       prefix,

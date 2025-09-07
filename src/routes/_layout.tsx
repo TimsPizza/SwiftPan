@@ -17,38 +17,8 @@ export function AppRoot() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { theme, systemTheme } = useTheme();
 
-  // Auto-detect a reasonable top inset; fallback for Android overlay status bar.
-  useEffect(() => {
-    const ua = navigator.userAgent || "";
-    const isAndroid = /Android/i.test(ua);
-
-    const applyFallback = () => {
-      const vv: any = (window as any).visualViewport;
-      let top = 0;
-      if (vv) {
-        top = Math.max(0, Math.round(vv.offsetTop || 0));
-        if (top === 0) {
-          const diff = Math.max(0, Math.round(window.innerHeight - vv.height));
-          if (diff > 0) top = Math.min(28, Math.max(0, 24));
-        }
-      } else if (isAndroid) {
-        top = 24;
-      }
-      document.documentElement.style.setProperty(
-        "--fallback-top",
-        `${top}px`,
-      );
-    };
-
-    applyFallback();
-    const vv: any = (window as any).visualViewport;
-    vv?.addEventListener?.("resize", applyFallback);
-    window.addEventListener("orientationchange", applyFallback);
-    return () => {
-      vv?.removeEventListener?.("resize", applyFallback);
-      window.removeEventListener("orientationchange", applyFallback);
-    };
-  }, []);
+  // Status bar inset now handled in index.html early script (persisted),
+  // keeping React free of first-paint layout shifts.
 
   useEffect(() => {
     // Resolve var(--background) to an actual rgb/rgba color for theme-color.

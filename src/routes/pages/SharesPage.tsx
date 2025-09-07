@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/Button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -43,15 +44,18 @@ export default function SharesPage() {
   }, []);
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-xl font-semibold">Shares</h2>
+    <Card className="max-h-full flex-1 flex flex-col min-h-0">
+       <CardHeader>
+        <CardTitle>Shares</CardTitle>
+       </CardHeader>
+      <CardContent className="min-h-0 max-h-full flex flex-col ">
       {loading ? (
         <div className="text-muted-foreground text-sm">Loading…</div>
       ) : data.length === 0 ? (
         <div className="text-muted-foreground text-sm">No shares yet.</div>
       ) : (
-        <div className="overflow-x-auto">
-          <Table className="w-full text-sm">
+        <div className="min-h-0 flex flex-col gap-4">
+          <Table className="w-full text-sm overflow-auto max-h-full min-h-0">
             <TableHeader>
               <TableRow className="text-left">
                 <TableHead className="p-2">File</TableHead>
@@ -98,6 +102,7 @@ export default function SharesPage() {
           </div>
         </div>
       )}
-    </div>
+      </CardContent>
+    </Card>
   );
 }

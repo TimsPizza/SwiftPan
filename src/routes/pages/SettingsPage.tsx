@@ -8,9 +8,11 @@ import {
 import { mutations, nv, queries } from "@/lib/api/tauriBridge";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { useQueryClient } from "react-query";
 import { toast } from "sonner";
 
 export default function SettingsPage() {
+  const queryClient = useQueryClient();
   const appSettingsQ = queries.useSettings();
   const [logLevel, setLogLevel] = useState<string>(
     appSettingsQ.data?.logLevel || "info",
@@ -82,6 +84,7 @@ export default function SettingsPage() {
       return;
     }
     await saveMutation.mutateAsync(parsed.data);
+    queryClient.invalidateQueries(["list_all_objects"]);
     await Promise.all([statusQ.refetch(), credsQ.refetch()]);
     toast.success("Settings saved");
   });
