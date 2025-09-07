@@ -181,10 +181,7 @@ pub async fn upload_stream_write(
 }
 
 #[tauri::command]
-pub async fn upload_stream_finish(
-    _app: tauri::AppHandle,
-    transfer_id: String,
-) -> SpResult<()> {
+pub async fn upload_stream_finish(_app: tauri::AppHandle, transfer_id: String) -> SpResult<()> {
     crate::upload::stream_finish(&transfer_id)
 }
 // Implemented below
@@ -214,8 +211,8 @@ pub async fn download_new(app: tauri::AppHandle, params: NewDownloadParams) -> S
     crate::logger::info(
         "bridge",
         &format!(
-            "download_new key={} chunk={} dest=*redacted*",
-            params.key, params.chunk_size
+            "download_new key={} chunk={} dest={}",
+            params.key, params.chunk_size, params.dest_path
         ),
     );
     let r = crate::download::start_download(app, params).await;
@@ -251,6 +248,18 @@ pub async fn download_ctrl(
 #[tauri::command]
 pub async fn download_status(transfer_id: String) -> SpResult<DownloadStatus> {
     crate::download::status(&transfer_id)
+}
+
+// Expose an app sandbox downloads directory for staged downloads
+#[tauri::command]
+pub async fn download_sandbox_dir() -> SpResult<String> {
+    let mut p = crate::sp_backend::vault_dir()?;
+    p.push("downloads");
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::create_dir_all(&p);
+    Ok(p.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -333,15 +342,39 @@ pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
     let bytes = r2_client::get_object_bytes(&client, &key)
         .await
         .map(|(b, _)| b)?;
-    let mut file = tokio::fs::File::create(&dest_path)
-        .await
-        .map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("open dest failed: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
+    // Normalize dest path (strip file://, reject other URIs) and ensure parent dir exists
+    let path = {
+        let raw = dest_path.trim();
+        let raw = raw.strip_prefix("file://").unwrap_or(raw);
+        if raw.contains("://") {
+            return Err(SpError {
+                kind: ErrorKind::NotRetriable,
+                message: "unsupported URI for download destination".into(),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+        std::path::PathBuf::from(raw)
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            return Err(SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("create parent dir: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+    }
+    let mut file = tokio::fs::File::create(&path).await.map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("open dest failed: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
     file.write_all(&bytes).await.map_err(|e| SpError {
         kind: ErrorKind::RetryableNet,
         message: format!("write file: {e}"),

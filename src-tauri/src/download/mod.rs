@@ -84,13 +84,34 @@ fn emit_download(app: &tauri::AppHandle, ev: &DownloadEvent) {
     let _ = app.emit("sp://download_event", ev);
 }
 
+fn normalize_dest_path(raw: &str) -> SpResult<PathBuf> {
+    let s = raw.trim();
+    // Strip common URI schemes that point to local FS
+    let s = if let Some(rest) = s.strip_prefix("file://") {
+        rest
+    } else {
+        s
+    };
+    // Reject obvious non-filesystem URIs (e.g., Android SAF content://)
+    if s.contains("://") {
+        return Err(SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "unsupported URI for download destination".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        });
+    }
+    Ok(PathBuf::from(s))
+}
+
 pub async fn start_download(app: tauri::AppHandle, params: NewDownloadParams) -> SpResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let paused = Arc::new(AtomicBool::new(false));
     let cancelled = Arc::new(AtomicBool::new(false));
 
     let key = params.key.clone();
-    let dest = PathBuf::from(params.dest_path.clone());
+    let dest = normalize_dest_path(&params.dest_path)?;
     let chunk = params.chunk_size.max(1024 * 1024);
     let expected = params.expected_etag.clone();
 
@@ -222,6 +243,17 @@ async fn run_download(
 
     // Temp file write
     let part_path = dest.with_extension("part");
+    if let Some(parent) = part_path.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            return Err(SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("create parent dir: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+    }
     let mut file = tokio::fs::File::create(&part_path)
         .await
         .map_err(|e| SpError {

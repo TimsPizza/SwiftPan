@@ -104,27 +104,48 @@ export const FileList = ({ files }: FileListProps) => {
 
   // Prefer hook's downloadOne to avoid new tab navigation
   const handleDownload = async (file: File, dest_path: string) => {
-    // dest_path is full file path; derive base directory
-    const sep = dest_path.includes("\\") ? "\\" : "/";
-    const idx = dest_path.lastIndexOf(sep);
-    const base = idx >= 0 ? dest_path.slice(0, idx) : dest_path;
+    // dest_path is final target (may be content://). We'll stage into sandbox first.
+    // Resolve sandbox directory from backend.
+    let sandboxDir = await nv.download_sandbox_dir().unwrapOr("");
+    sandboxDir = String(sandboxDir || "");
+    if (!sandboxDir) {
+      toast.error("No sandbox directory available");
+      return;
+    }
+    // Join sandboxDir and filename
+    const joinPath = (b: string, n: string) => {
+      const trimmed = b.endsWith("/") || b.endsWith("\\") ? b.slice(0, -1) : b;
+      const useBackslash = trimmed.includes("\\");
+      const sep = useBackslash ? "\\" : "/";
+      return `${trimmed}${sep}${n}`;
+    };
+    const sandboxPath = joinPath(sandboxDir, file.filename || "download");
     try {
-      const { useAppStore } = await import("@/store/app-store");
-      const cur = useAppStore.getState().defaultDownloadDir;
-      if (!cur || cur.trim().length === 0) {
-        useAppStore.getState().setDefaultDownloadDir(base);
-        // Persist into app settings best-effort
-        const current = await nv.settings_get();
-        const app = await current.unwrapOr(null as any);
-        if (app) {
-          await (
-            await nv.settings_set({ ...app, defaultDownloadDir: base })
-          ).unwrapOr(undefined);
-        }
-      }
-    } catch {}
-    toast.info(`Download started`);
-    await batch.downloadOne(file, base);
+      const r = await nv.download_new({
+        key: file.id,
+        dest_path: sandboxPath,
+        chunk_size: 4 * 1024 * 1024,
+      });
+      await r.match(
+        async (id) => {
+          // Track mapping for post-completion move
+          useTransferStore.getState().update(String(id), {
+            id: String(id),
+            type: "download",
+            key: file.id,
+            destPath: dest_path,
+            tempPath: sandboxPath,
+          });
+          useTransferStore.getState().ui.setOpen(true);
+          toast.info("Download started");
+        },
+        async (e) => {
+          throw new Error(String((e as any)?.message || e));
+        },
+      );
+    } catch (e) {
+      toast.error(`Failed to start download: ${file.filename}`);
+    }
   };
 
   const handleDeleteClick = (file: File) => {
@@ -253,6 +274,7 @@ export const FileList = ({ files }: FileListProps) => {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { useAppStore } = await import("@/store/app-store");
     const base = useAppStore.getState().defaultDownloadDir;
+    const isAndroid = /Android/i.test(navigator.userAgent || "");
     // If base unset, at least suggest filename so the dialog isn't blank
     const defaultPath =
       base && base.trim().length > 0
@@ -260,7 +282,8 @@ export const FileList = ({ files }: FileListProps) => {
         : file.filename;
     const picked = await save({ defaultPath });
     if (!picked) return;
-    await handleDownload(file, String(picked));
+    const dest = String(picked);
+    await handleDownload(file, dest);
   };
 
   if (!files || files.length === 0) {

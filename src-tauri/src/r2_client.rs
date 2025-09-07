@@ -212,18 +212,10 @@ pub async fn presign_get_url(
         })?
         .uri()
         .to_string();
-    if let Some(name) = download_filename {
-        let q = format!(
-            "response-content-disposition=attachment; filename=\"{}\"",
-            name
-        );
-        if url.contains('?') {
-            url.push('&');
-        } else {
-            url.push('?');
-        }
-        url.push_str(&q);
-    }
+    // IMPORTANT: Do NOT append extra query params after presigning.
+    // Adding parameters like response-content-disposition here will invalidate the signature.
+    // If we need forced filename, we must include it in the signature process itself.
+    let _ = download_filename; // currently ignored to preserve signature correctness
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
     Ok((url, expires_at.timestamp_millis()))
 }

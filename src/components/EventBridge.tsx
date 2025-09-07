@@ -10,9 +10,10 @@ import {
   onLogEvent,
   onUploadEvent,
 } from "@/lib/api/tauriBridge";
+import { useAppStore } from "@/store/app-store";
 import { useLogStore } from "@/store/log-store";
 import { useTransferStore } from "@/store/transfer-store";
-import { useAppStore } from "@/store/app-store";
+import { open, remove, stat } from "@tauri-apps/plugin-fs";
 import { useEffect } from "react";
 
 type TransferKind = "upload" | "download";
@@ -136,7 +137,7 @@ function handleUploadEvent(ev: UploadEvent) {
   }
 }
 
-function handleDownloadEvent(ev: DownloadEvent) {
+async function handleDownloadEvent(ev: DownloadEvent) {
   const id = ev.transfer_id;
   const s = useTransferStore.getState();
   console.log("handleDownloadEvent", ev);
@@ -168,6 +169,59 @@ function handleDownloadEvent(ev: DownloadEvent) {
     }
     case "Completed": {
       s.update(id, { state: "completed" });
+      // Post-process: if this download has a tempPath and final destPath, move/copy it now
+      try {
+        const item = useTransferStore.getState().items[id];
+        const src = item?.tempPath;
+        const dst = item?.destPath;
+        if (src && dst) {
+          console.log("copying from: ", src, "to: ", dst);
+          const srcF = await open(src, { read: true });
+          const dstF = await open(dst, {
+            write: true,
+            create: true,
+            truncate: true,
+          });
+
+          const buf = new Uint8Array(1024 * 1024);
+          let off = 0;
+          let totalW = 0;
+          console.log("stream copying, buffer length", buf.length);
+          for (;;) {
+            const read = await srcF.read(buf);
+            if (read === null) break;
+            await dstF.write(buf.subarray(0, read));
+            off += read;
+            totalW += read;
+          }
+          console.log("stream copying, off", off);
+          // Some providers require explicit truncate to finalize size metadata
+          try {
+            await dstF.truncate(off);
+          } catch {}
+          await srcF.close();
+          console.log("stream copying, srcF closed");
+          await dstF.close();
+          console.log("stream copying, dstF closed");
+
+          const meta = await stat(dst); // verify size
+          console.log(
+            "wrote=",
+            totalW,
+            "dst.size=",
+            meta.size,
+            "readonly?",
+            meta.readonly,
+          );
+          // best-effort cleanup of sandbox temp
+          try {
+            await remove(src);
+          } catch {}
+        }
+      } catch (e) {
+        console.error("post-download move failed", e);
+        s.update(id, { error: "move failed" });
+      }
       unregisterActive(id);
       setTimeout(() => void refreshDownloadStatus(id), 0);
       break;

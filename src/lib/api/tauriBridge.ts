@@ -205,6 +205,7 @@ export const nv = {
       observed_etag?: string;
       last_error?: unknown;
     }>("download_status", { transferId }),
+  download_sandbox_dir: () => resultInvoke<string>("download_sandbox_dir"),
   usage_merge_day: (date: string) =>
     resultInvoke<DailyLedger>("usage_merge_day", { date }),
   usage_list_month: (prefix: string) =>

@@ -13,6 +13,7 @@ export interface TransferItem {
   type: TransferType;
   key: string;
   destPath?: string;
+  tempPath?: string; // sandbox path where backend wrote
   bytesTotal?: number;
   bytesDone: number;
   rateBps: number;

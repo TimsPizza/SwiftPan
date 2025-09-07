@@ -2,6 +2,7 @@
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             crate::settings::settings_get,
             crate::settings::settings_set,
@@ -25,6 +26,7 @@ pub fn run() {
             crate::bridge::download_new,
             crate::bridge::download_ctrl,
             crate::bridge::download_status,
+            crate::bridge::download_sandbox_dir,
             crate::bridge::share_generate,
             crate::bridge::share_list,
             crate::bridge::usage_merge_day,
