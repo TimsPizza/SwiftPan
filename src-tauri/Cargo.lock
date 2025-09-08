@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "SwiftPan"
-version = "0.1.1-beta.1"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "base64 0.22.1",
