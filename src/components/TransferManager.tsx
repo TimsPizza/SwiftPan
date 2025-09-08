@@ -5,6 +5,7 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { Progress } from "@/components/ui/progress";
+import { SpError } from "@/lib/api/bridge";
 import { nv } from "@/lib/api/tauriBridge";
 import { formatBytes } from "@/lib/utils";
 import { useTransferStore } from "@/store/transfer-store";
@@ -41,7 +42,18 @@ export default function TransferManager() {
       if (type === "upload") {
         await nv.upload_ctrl(id, action);
       } else {
-        await nv.download_ctrl(id, action);
+        const r = nv.download_ctrl(id, action);
+        await r.match(
+          () => {},
+          (e) => {
+            const err = e as SpError;
+            if (action === "cancel" && err.message.search("not found")) {
+              useTransferStore
+                .getState()
+                .update(id, { state: "failed", error: err.message });
+            }
+          },
+        );
       }
     } finally {
       setBusyFor(id, false);

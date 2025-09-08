@@ -234,8 +234,8 @@ export default function SettingsPage() {
               value={maxConcurrency}
               onChange={(e) => setMaxConcurrency(Number(e.target.value) || 1)}
             />
-
-            <label className="text-sm">Default download directory</label>
+            {/* deprecated */}
+            {/* <label className="text-sm">Default download directory</label>
             <div className="flex items-center gap-2">
               <input
                 className="w-full rounded border px-2 py-1"
@@ -254,9 +254,9 @@ export default function SettingsPage() {
               >
                 Choose…
               </Button>
-            </div>
+            </div> */}
 
-            <label className="text-sm">Upload thumbnail alongside file</label>
+            <label className="text-sm">{`Upload thumbnail alongside file (Not implementd)`}</label>
             <div>
               <Switch
                 id="upload-thumb"

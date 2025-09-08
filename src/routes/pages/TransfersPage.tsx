@@ -10,7 +10,6 @@ export default function TransfersPage() {
   const items = useTransferStore((s) => s.items);
   const remove = useTransferStore((s) => s.remove);
   const [busy, setBusy] = useState<Set<string>>(new Set());
-
   const sorted = useMemo(
     () => Object.values(items).sort((a, b) => a.id.localeCompare(b.id)),
     [items],

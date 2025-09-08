@@ -48,6 +48,8 @@ pub fn run() {
             crate::bridge::android_pick_download_dir,
             crate::bridge::android_get_persisted_download_dir,
             crate::bridge::android_copy_from_path_to_tree,
+            crate::bridge::android_pick_upload_files,
+            crate::bridge::android_upload_from_uri,
         ])
         .setup(|app| {
             // Initialize tracing-based file logger with simple rotation (4MB cap)
@@ -78,6 +80,26 @@ pub fn run() {
                     }
                 } else {
                     crate::logger::info("app", "no unlocked credentials at startup; skip prebuild");
+                }
+            });
+            // Flush usage deltas on every app startup (per user request)
+            tauri::async_runtime::spawn(async move {
+                if crate::sp_backend::SpBackend::get_decrypted_bundle_if_unlocked().is_ok() {
+                    match crate::usage::UsageSync::sync_all_local_deltas().await {
+                        Ok(n) => crate::logger::info(
+                            "app",
+                            &format!("startup usage sync complete ({} day(s))", n),
+                        ),
+                        Err(e) => crate::logger::warn(
+                            "app",
+                            &format!("startup usage sync skipped: {}", e.message),
+                        ),
+                    }
+                } else {
+                    crate::logger::info(
+                        "app",
+                        "no unlocked credentials at startup; skip usage sync",
+                    );
                 }
             });
             Ok(())

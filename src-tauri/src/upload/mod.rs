@@ -310,6 +310,186 @@ pub async fn start_upload_stream(
     Ok(id)
 }
 
+// Android-only: start an upload by reading from a SAF content URI directly on the backend.
+#[cfg(target_os = "android")]
+pub async fn start_upload_android_uri(
+    app: tauri::AppHandle,
+    key: String,
+    uri: String,
+    part_size: u64,
+) -> SpResult<String> {
+    use tauri_plugin_android_fs::AndroidFsExt as _;
+    use std::io::Read;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let paused = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(AtomicBool::new(false));
+
+    // Prepare state entry with tentative size 0; update after opening
+    {
+        let mut g = UL.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "upload state lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        g.insert(
+            id.clone(),
+            UTransfer {
+                key: key.clone(),
+                src: PathBuf::new(),
+                part_size: part_size.max(512 * 1024),
+                bytes_total: 0,
+                bytes_done: 0,
+                parts_completed: 0,
+                last_error: None,
+                paused: paused.clone(),
+                cancelled: cancelled.clone(),
+            },
+        );
+    }
+
+    let id_spawn = id.clone();
+    let app_spawn = app.clone();
+    tokio::spawn(async move {
+        let res = async {
+            emit_upload(
+                &app_spawn,
+                &UploadEvent::Started {
+                    transfer_id: id_spawn.clone(),
+                },
+            );
+
+            let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
+            let client = r2_client::build_client(&bundle.r2).await?;
+            let mut writer = client.op.writer(&key).await.map_err(|e| SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("open writer: {e}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+
+            // Open readable file from SAF URI
+            let api = app_spawn.android_fs();
+            // We receive a raw content:// URI string from the bridge. Construct FileUri directly.
+            let file_uri = tauri_plugin_android_fs::FileUri {
+                uri: uri.clone(),
+                document_top_tree_uri: None,
+            };
+            let mut file = api.open_file_readable(&file_uri).map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("open_file_readable: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+
+            // Update total size if available
+            if let Ok(meta) = file.metadata() {
+                let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(t) = g.get_mut(&id_spawn) {
+                    t.bytes_total = meta.len();
+                }
+            }
+
+            let mut part_number: u32 = 1;
+            let mut buf = vec![0u8; part_size.max(256 * 1024) as usize];
+            loop {
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                while paused.load(Ordering::Relaxed) {
+                    emit_upload(
+                        &app_spawn,
+                        &UploadEvent::Paused {
+                            transfer_id: id_spawn.clone(),
+                        },
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                emit_upload(
+                    &app_spawn,
+                    &UploadEvent::Resumed {
+                        transfer_id: id_spawn.clone(),
+                    },
+                );
+
+                let n = file.read(&mut buf).map_err(|e| SpError {
+                    kind: ErrorKind::RetryableNet,
+                    message: format!("read src: {e}"),
+                    retry_after_ms: Some(200),
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                if n == 0 {
+                    break;
+                }
+
+                writer.write(buf[..n].to_vec()).await.map_err(|e| SpError {
+                    kind: ErrorKind::RetryableNet,
+                    message: format!("writer write: {e}"),
+                    retry_after_ms: Some(300),
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+
+                {
+                    let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(t) = g.get_mut(&id_spawn) {
+                        t.bytes_done = t.bytes_done.saturating_add(n as u64);
+                        t.parts_completed += 1;
+                    }
+                }
+                emit_upload(
+                    &app_spawn,
+                    &UploadEvent::PartProgress {
+                        transfer_id: id_spawn.clone(),
+                        progress: crate::types::UploadPartProgress {
+                            part_number,
+                            bytes_transferred: n as u64,
+                        },
+                    },
+                );
+                emit_upload(
+                    &app_spawn,
+                    &UploadEvent::PartDone {
+                        transfer_id: id_spawn.clone(),
+                        part_number,
+                        etag: String::new(),
+                    },
+                );
+                part_number += 1;
+            }
+
+            writer.close().await.map_err(|e| SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("writer close: {e}"),
+                retry_after_ms: Some(300),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+            emit_upload(
+                &app_spawn,
+                &UploadEvent::Completed {
+                    transfer_id: id_spawn.clone(),
+                },
+            );
+            Ok::<(), SpError>(())
+        }
+        .await;
+        if let Err(e) = res {
+            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(t) = g.get_mut(&id_spawn) {
+                t.last_error = Some(e);
+            }
+        }
+    });
+
+    Ok(id)
+}
+
 pub fn stream_write(id: &str, chunk: Vec<u8>) -> SpResult<()> {
     let g = USTREAMS.lock().map_err(|_| SpError {
         kind: ErrorKind::NotRetriable,

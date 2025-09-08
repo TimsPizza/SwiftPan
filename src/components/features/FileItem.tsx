@@ -110,6 +110,10 @@ export const MobileFileItem = ({
     }
   };
 
+  // Fast tap for thumbnail: trigger select on pointerup with small move threshold.
+  const tapRef = useRef({ active: false, sx: 0, sy: 0, moved: false });
+  const swallowNextClickRef = useRef(false);
+
   return (
     <RippleContainer
       id="file-item-container"
@@ -128,7 +132,32 @@ export const MobileFileItem = ({
       <button
         id="thumbnail-container"
         className="relative ml-1 size-10 overflow-hidden rounded-full"
-        onPointerDown={() => {
+        onPointerDown={(e) => {
+          if (!e.isPrimary) return;
+          tapRef.current = { active: true, sx: e.clientX, sy: e.clientY, moved: false };
+        }}
+        onPointerMove={(e) => {
+          if (!tapRef.current.active) return;
+          const dx = Math.abs(e.clientX - tapRef.current.sx);
+          const dy = Math.abs(e.clientY - tapRef.current.sy);
+          if (dx > 10 || dy > 10) tapRef.current.moved = true;
+        }}
+        onPointerUp={(e) => {
+          if (!tapRef.current.active) return;
+          const wasTap = !tapRef.current.moved && e.isPrimary;
+          tapRef.current.active = false;
+          if (wasTap) {
+            swallowNextClickRef.current = true;
+            onSelect(file);
+          }
+        }}
+        onClick={(e) => {
+          if (swallowNextClickRef.current) {
+            e.preventDefault();
+            e.stopPropagation();
+            swallowNextClickRef.current = false;
+            return;
+          }
           onSelect(file);
         }}
         aria-pressed={!!selected}

@@ -261,6 +261,16 @@ export const nv = {
     relative_path: string;
     mime?: string;
   }) => resultInvoke<void>("android_copy_from_path_to_tree", { params }),
+  // Android uploads via SAF (native; avoids JS streaming)
+  android_pick_upload_files: () =>
+    resultInvoke<Array<{ uri: string; name: string; size?: number }>>(
+      "android_pick_upload_files",
+    ),
+  android_upload_from_uri: (params: {
+    key: string;
+    uri: string;
+    part_size: number;
+  }) => resultInvoke<string>("android_upload_from_uri", { params }),
 };
 
 export async function applyStatusBarInsetFromNative() {

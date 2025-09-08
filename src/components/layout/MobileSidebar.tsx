@@ -46,7 +46,14 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
           const Icon = item.icon;
           const isActive = location.pathname === item.href;
           return (
-            <NavLink key={item.href} to={item.href} onPointerDown={onNavigate}>
+            <NavLink
+              key={item.href}
+              to={item.href}
+              onClick={() => {
+                // Close drawer after navigation is initiated; avoid pointerdown preempting link routing
+                onNavigate?.();
+              }}
+            >
               <Button
                 variant={"ghost"}
                 className={cn(

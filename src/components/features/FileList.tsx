@@ -43,22 +43,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useDesktopFileTransfer } from "@/hooks/use-desktop-file-transfer";
 import { useFileBatchAction } from "@/hooks/use-file-batch-action";
+import { useMobileFileTransfer } from "@/hooks/use-mobile-file-transfer";
 import type { FileItem as File } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
 import { cn } from "@/lib/utils";
-import { useAppStore } from "@/store/app-store";
-import { useTransferStore } from "@/store/transfer-store";
-import { open } from "@tauri-apps/plugin-dialog";
-import {
-  ArrowUpDown,
-  ChevronDown,
-  ChevronUp,
-  FileIcon,
-  UploadIcon,
-} from "lucide-react";
+import { ArrowUpDown, ChevronDown, ChevronUp, FileIcon, UploadIcon } from "lucide-react";
 import { useState } from "react";
-import { toast } from "sonner";
 
 interface FileListProps {
   files: File[];
@@ -85,10 +76,13 @@ export const FileList = ({ files }: FileListProps) => {
   const [activeFile, setActiveFile] = useState<File | null>(null);
 
   // Filters/sort/pagination are managed by the hook
-  const setTransfersOpen = useTransferStore((s) => s.ui.setOpen);
 
-  // batch actions using hook
+  // batch actions using hook (filters/selection/delete)
   const batch = useFileBatchAction(files);
+  const isAndroid = /Android/i.test(navigator.userAgent || "");
+  const transfers = isAndroid
+    ? useMobileFileTransfer(files)
+    : useDesktopFileTransfer(files);
 
   // Pagination is fully managed by the hook
 
@@ -102,51 +96,7 @@ export const FileList = ({ files }: FileListProps) => {
     );
   };
 
-  // Prefer hook's downloadOne to avoid new tab navigation
-  const handleDownload = async (file: File, dest_path: string) => {
-    // dest_path is final target (may be content://). We'll stage into sandbox first.
-    // Resolve sandbox directory from backend.
-    let sandboxDir = await nv.download_sandbox_dir().unwrapOr("");
-    sandboxDir = String(sandboxDir || "");
-    if (!sandboxDir) {
-      toast.error("No sandbox directory available");
-      return;
-    }
-    // Join sandboxDir and filename
-    const joinPath = (b: string, n: string) => {
-      const trimmed = b.endsWith("/") || b.endsWith("\\") ? b.slice(0, -1) : b;
-      const useBackslash = trimmed.includes("\\");
-      const sep = useBackslash ? "\\" : "/";
-      return `${trimmed}${sep}${n}`;
-    };
-    const sandboxPath = joinPath(sandboxDir, file.filename || "download");
-    try {
-      const r = await nv.download_new({
-        key: file.id,
-        dest_path: sandboxPath,
-        chunk_size: 4 * 1024 * 1024,
-      });
-      await r.match(
-        async (id) => {
-          // Track mapping for post-completion move
-          useTransferStore.getState().update(String(id), {
-            id: String(id),
-            type: "download",
-            key: file.id,
-            destPath: dest_path,
-            tempPath: sandboxPath,
-          });
-          useTransferStore.getState().ui.setOpen(true);
-          toast.info("Download started");
-        },
-        async (e) => {
-          throw new Error(String((e as any)?.message || e));
-        },
-      );
-    } catch (e) {
-      toast.error(`Failed to start download: ${file.filename}`);
-    }
-  };
+  // handled by transfer hooks now
 
   const handleDeleteClick = (file: File) => {
     setFileToDelete(file);
@@ -154,104 +104,7 @@ export const FileList = ({ files }: FileListProps) => {
   };
 
   const handleUploadClick = async () => {
-    const isAndroid = /Android/i.test(navigator.userAgent || "");
-    if (isAndroid) {
-      // Android: always use HTML file input to avoid double picker
-      const input = document.createElement("input");
-      input.type = "file";
-      input.multiple = true;
-      input.onchange = async () => {
-        const filesChosen = Array.from(input.files || []);
-        if (filesChosen.length === 0) return;
-        const bucketKeys = new Set(files.map((f) => f.id));
-        const storeItems = useTransferStore.getState().items;
-        for (const f of filesChosen) {
-          const key = f.name;
-          if (bucketKeys.has(key)) {
-            toast.error(`File already exists: ${key}`);
-            continue;
-          }
-          const dup = Object.values(storeItems).some(
-            (t) =>
-              t.type === "upload" &&
-              t.key === key &&
-              t.state !== "completed" &&
-              t.state !== "failed",
-          );
-          if (dup) {
-            toast.info(`Already uploading: ${key}`);
-            continue;
-          }
-          const start = await nv.upload_new_stream({
-            key,
-            bytes_total: f.size,
-            part_size: 8 * 1024 * 1024,
-          });
-          await start.match(
-            async (id) => {
-              toast.success(`Upload started: ${key}`);
-              setTransfersOpen(true);
-              const CHUNK = 1024 * 1024 * 4; // 4 MiB
-              for (let offset = 0; offset < f.size; offset += CHUNK) {
-                const slice = f.slice(offset, Math.min(f.size, offset + CHUNK));
-                const buf = new Uint8Array(await slice.arrayBuffer());
-                const r = await nv.upload_stream_write(id, buf);
-                if (r.isErr()) break;
-              }
-              await nv.upload_stream_finish(id);
-            },
-            async (e) => {
-              console.error(e);
-              toast.error(`Upload failed to start: ${key}`);
-            },
-          );
-        }
-      };
-      input.click();
-      return;
-    }
-
-    const picked = await open({ multiple: true });
-    const entries = picked ? (Array.isArray(picked) ? picked : [picked]) : [];
-    if (entries.length === 0) return;
-
-    const selected = entries.map((e) => String(e));
-    const bucketKeys = new Set(files.map((f) => f.id));
-    const storeItems = useTransferStore.getState().items;
-    for (const filePath of selected) {
-      const fileName = filePath.split("/").pop() || filePath;
-      const key = fileName;
-      if (bucketKeys.has(key)) {
-        toast.error(`File already exists: ${key}`);
-        continue;
-      }
-      const dup = Object.values(storeItems).some(
-        (t) =>
-          t.type === "upload" &&
-          t.key === key &&
-          t.state !== "completed" &&
-          t.state !== "failed",
-      );
-      if (dup) {
-        toast.info(`Already uploading: ${key}`);
-        continue;
-      }
-      const res = await nv.upload_new({
-        key,
-        source_path: filePath,
-        part_size: 8 * 1024 * 1024,
-      });
-      res.match(
-        () => {
-          toast.success(`Upload started: ${fileName}`);
-          setTransfersOpen(true);
-        },
-        (e) => {
-          console.error(e);
-          toast.error(`Upload failed to start: ${fileName}`);
-        },
-      );
-    }
+    await transfers.pickUploads();
   };
 
   // Shared menu handlers
@@ -270,19 +123,7 @@ export const FileList = ({ files }: FileListProps) => {
     setDetailsOpen(true);
   };
   const openDownload = async (file: File) => {
-    // Use native save dialog directly with suggested default
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const { useAppStore } = await import("@/store/app-store");
-    const base = useAppStore.getState().defaultDownloadDir;
-    // If base unset, at least suggest filename so the dialog isn't blank
-    const defaultPath =
-      base && base.trim().length > 0
-        ? `${base.replace(/[\\/]$/, "")}/${file.filename}`
-        : file.filename;
-    const picked = await save({ defaultPath });
-    if (!picked) return;
-    const dest = String(picked);
-    await handleDownload(file, dest);
+    await transfers.downloadOne(file);
   };
 
   if (!files || files.length === 0) {
@@ -452,7 +293,7 @@ export const FileList = ({ files }: FileListProps) => {
         {batch.selectedCount > 0 && (
           <div className="mb-3 hidden items-center justify-between rounded-md border p-2 md:flex">
             <div className="text-sm">
-              <span className="font-medium">{batch.selectedCount}</span>
+              <span className="font-medium">{batch.selectedCount}</span>{" "}
               selected
             </div>
             <div className="flex items-center gap-2">
@@ -461,31 +302,7 @@ export const FileList = ({ files }: FileListProps) => {
                 size="sm"
                 className="cursor-pointer text-xs"
                 onClick={async () => {
-                  const base = useAppStore.getState().defaultDownloadDir;
-                  const picked = await open({
-                    directory: true,
-                    multiple: false,
-                    defaultPath: base ?? undefined,
-                  });
-                  if (!picked) return;
-                  const chosen = String(picked);
-                  // Remember as default if missing
-                  if (!base || base.trim().length === 0) {
-                    useAppStore.getState().setDefaultDownloadDir(chosen);
-                    try {
-                      const s = await nv.settings_get();
-                      const app = await s.unwrapOr(null as any);
-                      if (app) {
-                        await (
-                          await nv.settings_set({
-                            ...app,
-                            defaultDownloadDir: chosen,
-                          })
-                        ).unwrapOr(undefined);
-                      }
-                    } catch {}
-                  }
-                  await batch.batchDownload(chosen);
+                  await transfers.downloadMany(batch.getSelectedFiles());
                 }}
               >
                 Download
@@ -686,37 +503,7 @@ export const FileList = ({ files }: FileListProps) => {
       <FileDownloadDeleteTooltip
         selectedFiles={batch.getSelectedFiles()}
         onDownloadAll={async () => {
-          const { useAppStore } = await import("@/store/app-store");
-          const base = useAppStore.getState().defaultDownloadDir;
-          const isAndroid = /Android/i.test(navigator.userAgent || "");
-          if (isAndroid) {
-            // Android: use SAF-based batch flow; no directory prompt
-            await batch.batchDownloadAndroid();
-            return;
-          } else {
-            let chosen: string | null = null;
-            const picked = await open({
-              directory: true,
-              multiple: false,
-              defaultPath: base ?? undefined,
-            });
-            if (!picked) return;
-            chosen = String(picked);
-            if (!chosen) return;
-            if (!base || base.trim().length === 0) {
-              useAppStore.getState().setDefaultDownloadDir(chosen);
-              try {
-                const s = await nv.settings_get();
-                const app = await s.unwrapOr(null as any);
-                if (app) {
-                  await (
-                    await nv.settings_set({ ...app, defaultDownloadDir: chosen })
-                  ).unwrapOr(undefined);
-                }
-              } catch {}
-            }
-            await batch.batchDownload(chosen);
-          }
+          await transfers.downloadMany(batch.getSelectedFiles());
         }}
         onDeleteAll={() => setMultiDeleteOpen(true)}
         onShareAll={() => setBatchShareOpen(true)}

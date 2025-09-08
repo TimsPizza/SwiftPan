@@ -81,7 +81,11 @@ export function AppRoot() {
           {/* Event Listeners */}
           <EventBridge />
           {/* Sonner Toast Container */}
-          <Toaster richColors position="top-center" />
+          <Toaster
+            richColors
+            style={{ marginTop: "var(--resolved-safe-top)" }}
+            position="top-center"
+          />
         </ThemeProvider>
       </HelmetProvider>
     </QueryClientProvider>

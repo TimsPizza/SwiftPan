@@ -45,13 +45,14 @@ pub async fn android_pick_download_dir(app: tauri::AppHandle) -> SpResult<String
             });
         };
         // Persist URI permission for long-term use
-        api.take_persistable_uri_permission(&dir_uri).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("take_persistable_uri_permission: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
+        api.take_persistable_uri_permission(&dir_uri)
+            .map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("take_persistable_uri_permission: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
         // Serialize FileUri to string for storage
         let tree_uri = dir_uri.to_string().map_err(|e| SpError {
             kind: ErrorKind::NotRetriable,
@@ -379,6 +380,138 @@ pub async fn upload_status(transfer_id: String) -> SpResult<UploadStatus> {
     crate::upload::status(&transfer_id)
 }
 // Implemented below
+
+// Android: pick one or more files for upload using SAF
+#[tauri::command]
+pub async fn android_pick_upload_files(app: tauri::AppHandle) -> SpResult<Vec<serde_json::Value>> {
+    #[cfg(target_os = "android")]
+    {
+        let api = app.android_fs();
+        let picker = api.file_picker();
+        let mut out: Vec<serde_json::Value> = Vec::new();
+
+        // Helpers: extract actual content URI from FileUri.to_string JSON, and derive a display name
+        fn extract_uri(s: &str) -> String {
+            let t = s.trim();
+            if t.starts_with('{') {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+                    if let Some(u) = v.get("uri").and_then(|x| x.as_str()) {
+                        return u.to_string();
+                    }
+                }
+            }
+            s.to_string()
+        }
+        fn pct_hex(n: u8) -> Option<u8> {
+            match n {
+                b'0'..=b'9' => Some(n - b'0'),
+                b'a'..=b'f' => Some(10 + (n - b'a')),
+                b'A'..=b'F' => Some(10 + (n - b'A')),
+                _ => None,
+            }
+        }
+        fn percent_decode(s: &str) -> String {
+            let b = s.as_bytes();
+            let mut i = 0usize;
+            let mut out = Vec::with_capacity(b.len());
+            while i < b.len() {
+                if b[i] == b'%' && i + 2 < b.len() {
+                    if let (Some(h), Some(l)) = (pct_hex(b[i + 1]), pct_hex(b[i + 2])) {
+                        out.push((h << 4) | l);
+                        i += 3;
+                        continue;
+                    }
+                }
+                out.push(b[i]);
+                i += 1;
+            }
+            String::from_utf8_lossy(&out).to_string()
+        }
+        fn derive_name_from_uri(u: &str) -> String {
+            let actual = percent_decode(u);
+            let last = actual.rsplit('/').next().unwrap_or(&actual);
+            last.to_string()
+        }
+
+        // Try multi-select first (allow all MIME types)
+        match picker.pick_files(None, &[]) {
+            Ok(list) => {
+                for f in list {
+                    let raw = match f.to_string() {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
+                    let uri = extract_uri(&raw);
+                    let name = derive_name_from_uri(&uri);
+                    out.push(serde_json::json!({ "uri": uri, "name": name }));
+                }
+                if !out.is_empty() {
+                    return Ok(out);
+                }
+            }
+            _ => {}
+        }
+
+        // Fallback to single select
+        let picked = picker.pick_file(None, &[]).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("pick_file failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        if let Some(f) = picked {
+            let raw = f.to_string().map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("serialize FileUri: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+            let uri = extract_uri(&raw);
+            let name = derive_name_from_uri(&uri);
+            out.push(serde_json::json!({ "uri": uri, "name": name }));
+        }
+        return Ok(out);
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = app;
+        Err(err_not_implemented("android_pick_upload_files"))
+    }
+}
+
+// Android: start upload directly from a SAF content URI (backend reads the file)
+#[tauri::command]
+pub async fn android_upload_from_uri(
+    app: tauri::AppHandle,
+    params: serde_json::Value,
+) -> SpResult<String> {
+    let key = params
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err_invalid("key missing"))?
+        .to_string();
+    let uri = params
+        .get("uri")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| err_invalid("uri missing"))?
+        .to_string();
+    let part_size = params
+        .get("part_size")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(8 * 1024 * 1024);
+
+    #[cfg(target_os = "android")]
+    {
+        crate::upload::start_upload_android_uri(app, key, uri, part_size).await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, key, uri, part_size);
+        Err(err_not_implemented("android_upload_from_uri"))
+    }
+}
 
 #[tauri::command]
 pub async fn download_new(app: tauri::AppHandle, params: NewDownloadParams) -> SpResult<String> {

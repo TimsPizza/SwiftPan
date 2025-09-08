@@ -1,13 +1,9 @@
 import type { FileItem as File } from "@/lib/api/schemas";
 import { nv } from "@/lib/api/tauriBridge";
-import { useAppStore } from "@/store/app-store";
-import { useTransferStore } from "@/store/transfer-store";
+// import { useAppStore } from "@/store/app-store";
+// import { useTransferStore } from "@/store/transfer-store";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-
-// Detect if running on Android
-const isAndroid = typeof window !== "undefined" && 
-  /Android/i.test(window.navigator?.userAgent || "");
 
 export interface UseFileBatchActionReturn {
   allFiles: File[];
@@ -40,13 +36,10 @@ export interface UseFileBatchActionReturn {
   toggleOne: (id: string) => void;
   toggleAllVisible: () => void;
   clearSelection: () => void;
-  batchDownload: (destBase?: string) => Promise<void>;
-  batchDownloadAndroid: () => Promise<void>;
   deleteSelectedOrByFileId: (
     id?: string,
   ) => Promise<{ successIds: string[]; failedIds: string[] }>;
   getSelectedFiles: () => File[];
-  downloadOne: (file: File, destBase?: string) => Promise<void>;
   selectAll: () => void;
   deselectAll: () => void;
   // sorting helpers
@@ -60,8 +53,7 @@ export interface UseFileBatchActionReturn {
 export const useFileBatchAction = (
   files: File[] | undefined,
 ): UseFileBatchActionReturn => {
-  // Use app store as source of download base directory initialized at startup
-  const defaultBase = useAppStore((s) => s.defaultDownloadDir);
+  // download/upload concerns moved to platform-specific hooks
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
 
@@ -194,7 +186,16 @@ export const useFileBatchAction = (
       if (f.size < minBytes || f.size > maxBytes) return false;
       return true;
     });
-  }, [files, removedIds, search, timeFilter, minSizeMB, maxSizeMB, typeFilter, getCategory]);
+  }, [
+    files,
+    removedIds,
+    search,
+    timeFilter,
+    minSizeMB,
+    maxSizeMB,
+    typeFilter,
+    getCategory,
+  ]);
   const totalItems = filteredAll.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
   useEffect(() => {
@@ -274,224 +275,6 @@ export const useFileBatchAction = (
     setSelectedIds(new Set(filteredAll.map((f) => f.id)));
   }, [filteredAll]);
   const deselectAll = clearSelection;
-
-  const resolveBase = useCallback(
-    async (override?: string): Promise<string | null> => {
-      if (override && override.trim().length > 0) return override;
-      if (defaultBase && defaultBase.trim().length > 0)
-        return defaultBase.trim();
-      toast.error("Default download directory is not set");
-      return null;
-    },
-    [defaultBase],
-  );
-
-  const batchDownload = useCallback(
-    async (destBase?: string) => {
-      const targets: File[] = Array.from(selectedIds)
-        .map((id) => idToFile.get(id))
-        .filter(Boolean) as File[];
-
-      const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-      const base = await resolveBase(destBase);
-      if (!base) return;
-
-      // Helper to join base dir and filename without changing drive/root semantics
-      const joinPath = (base: string, name: string) => {
-        if (!base) return name;
-        const trimmed =
-          base.endsWith("/") || base.endsWith("\\") ? base.slice(0, -1) : base;
-        const useBackslash = trimmed.includes("\\");
-        const sep = useBackslash ? "\\" : "/";
-        return `${trimmed}${sep}${name}`;
-      };
-
-      for (const f of targets) {
-        try {
-          const dest = joinPath(base, f.filename || "download");
-          // prevent duplicate active downloads for same key
-          const active = useTransferStore.getState().items;
-          const dup = Object.values(active).some(
-            (t) =>
-              t.type === "download" &&
-              t.key === f.id &&
-              t.state !== "completed" &&
-              t.state !== "failed",
-          );
-          if (dup) {
-            toast.info(`Already downloading: ${f.filename}`);
-            continue;
-          }
-          const r = await nv.download_new({
-            key: f.id,
-            dest_path: dest,
-            chunk_size: 4 * 1024 * 1024,
-          });
-          r.match(
-            () => {
-              useTransferStore.getState().ui.setOpen(true);
-            },
-            (e) => {
-              throw new Error(String((e as any)?.message || e));
-            },
-          );
-          // small delay to avoid UI jank
-          await delay(400);
-        } catch (e) {
-          toast.error(`Failed to download ${f.filename}`);
-        }
-      }
-    },
-    [selectedIds, idToFile, resolveBase],
-  );
-
-  const downloadOne = useCallback(
-    async (file: File, destBase?: string) => {
-      try {
-        const base = await resolveBase(destBase);
-        if (!base) return;
-        const joinPath = (b: string, n: string) => {
-          const trimmed =
-            b.endsWith("/") || b.endsWith("\\") ? b.slice(0, -1) : b;
-          const useBackslash = trimmed.includes("\\");
-          const sep = useBackslash ? "\\" : "/";
-          return `${trimmed}${sep}${n}`;
-        };
-        const dest = joinPath(base, file.filename || "download");
-        const active = useTransferStore.getState().items;
-        const dup = Object.values(active).some(
-          (t) =>
-            t.type === "download" &&
-            t.key === file.id &&
-            t.state !== "completed" &&
-            t.state !== "failed",
-        );
-        if (dup) {
-          toast.info(`Already downloading: ${file.filename}`);
-          return;
-        }
-        const r = await nv.download_new({
-          key: file.id,
-          dest_path: dest,
-          chunk_size: 4 * 1024 * 1024,
-        });
-        r.match(
-          () => {
-            useTransferStore.getState().ui.setOpen(true);
-          },
-          (e) => {
-            throw new Error(String((e as any)?.message || e));
-          },
-        );
-      } catch (e) {
-        toast.error(`Failed to download ${file.filename}`);
-      }
-    },
-    [resolveBase],
-  );
-
-  // Android-specific batch download using SAF
-  const batchDownloadAndroid = useCallback(async () => {
-    if (!isAndroid) {
-      toast.error("This function is only available on Android");
-      return;
-    }
-
-    const targets: File[] = Array.from(selectedIds)
-      .map((id) => idToFile.get(id))
-      .filter(Boolean) as File[];
-
-    if (targets.length === 0) {
-      toast.error("No files selected");
-      return;
-    }
-
-    try {
-      // Check if we have a persisted tree URI
-      let treeUri = await (await nv.android_get_persisted_download_dir()).unwrapOr(null);
-      
-      if (!treeUri) {
-        // First time: let user pick directory
-        toast.info("Please select download directory (one-time setup)");
-        const result = await nv.android_pick_download_dir();
-        treeUri = await result.unwrapOr(null);
-        if (!treeUri) {
-          toast.error("Failed to select download directory");
-          return;
-        }
-        toast.success("Download directory configured successfully");
-      }
-
-      let successCount = 0;
-      let failCount = 0;
-
-      for (const file of targets) {
-        try {
-          // First download to sandbox
-          const sandboxResult = await nv.download_sandbox_dir();
-          const sandboxPath = await sandboxResult.unwrapOr(null);
-          if (!sandboxPath) {
-            throw new Error("Failed to get sandbox directory");
-          }
-          
-          const localPath = `${sandboxPath}/${file.id}`;
-          
-          // Download to sandbox first
-          const downloadResult = await nv.download_new({
-            key: file.id,
-            dest_path: localPath,
-            chunk_size: 4 * 1024 * 1024,
-          });
-
-          await downloadResult.match(
-            async () => {
-              // Wait for download to complete (simplified - in real app you'd listen to events)
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              // Copy from sandbox to SAF tree
-              const copyResult = await nv.android_copy_from_path_to_tree({
-                src_path: localPath,
-                tree_uri: treeUri!,
-                relative_path: file.filename || `download_${file.id}`,
-                mime: undefined,
-              });
-              
-              await copyResult.match(
-                () => {
-                  successCount++;
-                  toast.success(`Downloaded: ${file.filename}`);
-                },
-                (error) => {
-                  failCount++;
-                  toast.error(`Failed to copy ${file.filename}: ${error}`);
-                }
-              );
-            },
-            (error) => {
-              failCount++;
-              toast.error(`Failed to download ${file.filename}: ${error}`);
-            }
-          );
-
-          // Small delay to avoid overwhelming the system
-          await new Promise(resolve => setTimeout(resolve, 200));
-        } catch (error) {
-          failCount++;
-          toast.error(`Error downloading ${file.filename}: ${error}`);
-        }
-      }
-
-      if (successCount > 0) {
-        toast.success(`Successfully downloaded ${successCount} files`);
-      }
-      if (failCount > 0) {
-        toast.error(`Failed to download ${failCount} files`);
-      }
-    } catch (error) {
-      toast.error(`Batch download failed: ${error}`);
-    }
-  }, [selectedIds, idToFile]);
 
   // if id is provided, delete only that file
   // if id is not provided, delete all selected files
@@ -576,11 +359,8 @@ export const useFileBatchAction = (
     toggleOne,
     toggleAllVisible,
     clearSelection,
-    batchDownload,
-    batchDownloadAndroid,
     deleteSelectedOrByFileId,
     getSelectedFiles,
-    downloadOne,
     selectAll,
     deselectAll,
     sortBy,

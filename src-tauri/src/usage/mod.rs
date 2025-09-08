@@ -12,6 +12,57 @@ use tokio::sync::Mutex as AsyncMutex;
 pub struct UsageSync;
 
 impl UsageSync {
+    /// Flush all locally accumulated usage deltas to remote ledgers.
+    ///
+    /// Scans `usage_deltas/` for `YYYY-MM-DD.json` files and merges each
+    /// into the corresponding daily ledger, clearing the local file after.
+    /// Returns number of days merged.
+    pub async fn sync_all_local_deltas() -> SpResult<usize> {
+        let dir = app_dir()?.join("usage_deltas");
+        if !dir.exists() {
+            return Ok(0);
+        }
+        let mut dates: Vec<String> = Vec::new();
+        let rd = std::fs::read_dir(&dir).map_err(ioe)?;
+        for ent in rd {
+            let ent = ent.map_err(ioe)?;
+            let path = ent.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if chrono::NaiveDate::parse_from_str(stem, "%Y-%m-%d").is_ok() {
+                    dates.push(stem.to_string());
+                }
+            }
+        }
+        dates.sort_unstable();
+        if dates.is_empty() {
+            return Ok(0);
+        }
+        crate::logger::info(
+            "usage",
+            &format!("startup sync: pending days = {:?}", dates),
+        );
+        let mut merged = 0usize;
+        for d in dates {
+            match Self::merge_and_write_day(&d).await {
+                Ok(_) => {
+                    merged += 1;
+                }
+                Err(e) => {
+                    crate::logger::error(
+                        "usage",
+                        &format!("startup sync failed for {}: {}", d, e.message),
+                    );
+                }
+            }
+        }
+        Ok(merged)
+    }
     pub fn record_local_delta(delta: UsageDelta) -> SpResult<()> {
         let p = local_delta_path_for_today()?;
         let mut cur: UsageDelta = if p.exists() {
@@ -70,6 +121,7 @@ impl UsageSync {
         // Serialize merges to avoid concurrent duplicate writes
         static MERGE_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
         let _guard = MERGE_LOCK.lock().await;
+        crate::logger::info("usage", &format!("merge_and_write_day date:: {}", date));
         // Fast-path: if already merged today, skip R2 ops entirely
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         if date == today {

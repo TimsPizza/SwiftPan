@@ -13,8 +13,9 @@ import {
 import { useAppStore } from "@/store/app-store";
 import { useLogStore } from "@/store/log-store";
 import { useTransferStore } from "@/store/transfer-store";
-import { open, remove, stat } from "@tauri-apps/plugin-fs";
+import { open, remove } from "@tauri-apps/plugin-fs";
 import { useEffect } from "react";
+import { toast } from "sonner";
 
 type TransferKind = "upload" | "download";
 
@@ -62,7 +63,13 @@ async function refreshUploadStatus(id: string) {
   const status = await nv
     .upload_status(id)
     .unwrapOr(null as unknown as UploadStatus | null);
-  if (!status) return;
+  if (!status) {
+    useTransferStore
+      .getState()
+      .update(id, { state: "failed", error: "status not found" });
+    unregisterActive(id);
+    return;
+  }
   const store = useTransferStore.getState();
   // Ensure basic item exists
   store.update(id, {
@@ -79,7 +86,14 @@ async function refreshDownloadStatus(id: string) {
   const status = await nv
     .download_status(id)
     .unwrapOr(null as unknown as DownloadStatus | null);
-  if (!status) return;
+
+  if (!status) {
+    useTransferStore
+      .getState()
+      .update(id, { state: "failed", error: "status not found" });
+    unregisterActive(id);
+    return;
+  }
   const store = useTransferStore.getState();
   store.update(id, {
     id,
@@ -94,6 +108,16 @@ async function refreshDownloadStatus(id: string) {
 function handleUploadEvent(ev: UploadEvent) {
   const id = ev.transfer_id;
   const s = useTransferStore.getState();
+  const ua = (globalThis as any)?.navigator?.userAgent || "";
+  const isAndroid = /Android/i.test(String(ua));
+  const keyOrName = () => {
+    try {
+      const item = useTransferStore.getState().items[id];
+      return item?.key ? String(item.key) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   switch (ev.type) {
     case "Started": {
       registerActive(id, "upload");
@@ -106,6 +130,10 @@ function handleUploadEvent(ev: UploadEvent) {
       });
       // Defer heavy status fetch
       setTimeout(() => void refreshUploadStatus(id), 0);
+      {
+        const k = keyOrName();
+        toast.info(k ? `Upload started: ${k}` : "Upload started");
+      }
       break;
     }
     case "Resumed": {
@@ -126,12 +154,22 @@ function handleUploadEvent(ev: UploadEvent) {
       s.update(id, { state: "completed" });
       unregisterActive(id);
       setTimeout(() => void refreshUploadStatus(id), 0);
+      // Show success toast; do not suppress on Android because upload hook doesn’t duplicate it
+      {
+        const k = keyOrName();
+        toast.success(k ? `Upload completed: ${k}` : "Upload completed");
+      }
       break;
     }
     case "Failed": {
       s.update(id, { state: "failed", error: ev.error?.message ?? "failed" });
       unregisterActive(id);
       setTimeout(() => void refreshUploadStatus(id), 0);
+      {
+        const k = keyOrName();
+        const msg = ev.error?.message ? `: ${ev.error.message}` : "";
+        toast.error(k ? `Upload failed (${k})${msg}` : `Upload failed${msg}`);
+      }
       break;
     }
   }
@@ -141,6 +179,16 @@ async function handleDownloadEvent(ev: DownloadEvent) {
   const id = ev.transfer_id;
   const s = useTransferStore.getState();
   console.log("handleDownloadEvent", ev);
+  const ua = (globalThis as any)?.navigator?.userAgent || "";
+  const isAndroid = /Android/i.test(String(ua));
+  const keyOrName = () => {
+    try {
+      const item = useTransferStore.getState().items[id];
+      return item?.key ? String(item.key) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   switch (ev.type) {
     case "Started": {
       registerActive(id, "download");
@@ -152,6 +200,10 @@ async function handleDownloadEvent(ev: DownloadEvent) {
         state: "running",
       });
       setTimeout(() => void refreshDownloadStatus(id), 0);
+      {
+        const k = keyOrName();
+        toast.info(k ? `Download started: ${k}` : "Download started");
+      }
       break;
     }
     case "Resumed": {
@@ -204,15 +256,6 @@ async function handleDownloadEvent(ev: DownloadEvent) {
           await dstF.close();
           console.log("stream copying, dstF closed");
 
-          const meta = await stat(dst); // verify size
-          console.log(
-            "wrote=",
-            totalW,
-            "dst.size=",
-            meta.size,
-            "readonly?",
-            meta.readonly,
-          );
           // best-effort cleanup of sandbox temp
           try {
             await remove(src);
@@ -224,12 +267,22 @@ async function handleDownloadEvent(ev: DownloadEvent) {
       }
       unregisterActive(id);
       setTimeout(() => void refreshDownloadStatus(id), 0);
+      // Avoid duplicate success toasts on Android where mobile hook already shows one after SAF copy
+      if (!isAndroid) {
+        const k = keyOrName();
+        toast.success(k ? `Download completed: ${k}` : "Download completed");
+      }
       break;
     }
     case "Failed": {
       s.update(id, { state: "failed", error: ev.error?.message ?? "failed" });
       unregisterActive(id);
       setTimeout(() => void refreshDownloadStatus(id), 0);
+      {
+        const k = keyOrName();
+        const msg = ev.error?.message ? `: ${ev.error.message}` : "";
+        toast.error(k ? `Download failed (${k})${msg}` : `Download failed${msg}`);
+      }
       break;
     }
     case "SourceChanged": {

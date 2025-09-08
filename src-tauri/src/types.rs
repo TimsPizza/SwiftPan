@@ -110,3 +110,14 @@ pub fn err_not_implemented(msg: &str) -> SpError {
         at: chrono::Utc::now().timestamp_millis(),
     }
 }
+
+// Helper to create a standard invalid-argument error
+pub fn err_invalid(msg: &str) -> SpError {
+    SpError {
+        kind: ErrorKind::NotRetriable,
+        message: msg.to_string(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    }
+}

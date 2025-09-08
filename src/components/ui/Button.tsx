@@ -52,16 +52,107 @@ const Button = React.forwardRef<
     }
 >(({ className, variant, size, asChild = false, ...props }, ref) => {
   const Comp = asChild ? Slot : "button";
+  // Fast-press: call onClick on pointerup with small move threshold
+  // Only apply when not rendering asChild (since asChild may be a link/NavLink)
+  const [ignoreNextClick, setIgnoreNextClick] = React.useState(false);
+  const pressData = React.useRef({
+    active: false,
+    id: -1,
+    sx: 0,
+    sy: 0,
+    moved: false,
+  });
+
+  const userOnClick = (props as any).onClick as
+    | ((e: React.MouseEvent<HTMLButtonElement>) => void)
+    | undefined;
+  const userOnPointerDown = (props as any).onPointerDown as
+    | ((e: React.PointerEvent<HTMLButtonElement>) => void)
+    | undefined;
+  const userOnPointerMove = (props as any).onPointerMove as
+    | ((e: React.PointerEvent<HTMLButtonElement>) => void)
+    | undefined;
+  const userOnPointerUp = (props as any).onPointerUp as
+    | ((e: React.PointerEvent<HTMLButtonElement>) => void)
+    | undefined;
+
+  const THRESH = 10; // px movement threshold to treat as tap
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    userOnPointerDown?.(e);
+    if (asChild) return; // don't interfere with Slot children (links)
+    if (!e.isPrimary || (props as any).disabled) return;
+    pressData.current.active = true;
+    pressData.current.id = e.pointerId;
+    pressData.current.sx = e.clientX;
+    pressData.current.sy = e.clientY;
+    pressData.current.moved = false;
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    userOnPointerMove?.(e);
+    if (asChild) return;
+    if (!pressData.current.active) return;
+    const dx = Math.abs(e.clientX - pressData.current.sx);
+    const dy = Math.abs(e.clientY - pressData.current.sy);
+    if (dx > THRESH || dy > THRESH) pressData.current.moved = true;
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+    userOnPointerUp?.(e);
+    if (asChild) return;
+    if (!pressData.current.active) return;
+    const wasTap = !pressData.current.moved && e.isPrimary;
+    pressData.current.active = false;
+    if (wasTap && typeof userOnClick === "function") {
+      // Fire early and swallow the upcoming click to avoid perceived delay
+      setIgnoreNextClick(true);
+      // Coerce event type to mouse handler signature
+      (userOnClick as any)(e);
+    }
+  };
+
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (ignoreNextClick) {
+      e.preventDefault();
+      e.stopPropagation();
+      setIgnoreNextClick(false);
+      return;
+    }
+    userOnClick?.(e);
+  };
+
+  const rest = props as Omit<React.ComponentProps<"button">, "ref">;
 
   return (
     <Comp
       ref={ref}
       data-slot="button"
+      // default to button to avoid accidental form submits
+      {...(!asChild ? { type: (rest.type as any) ?? "button" } : null)}
       className={cn(
         buttonVariants({ variant, size, className }),
-        "active:scale-95 active:opacity-90",
+        // ensure no 300ms delay even in older engines
+        "touch-manipulation active:scale-95 active:opacity-90",
       )}
-      {...props}
+      // only attach fast-press handlers when not asChild
+      {...(!asChild
+        ? {
+            onPointerDown: handlePointerDown,
+            onPointerMove: handlePointerMove,
+            onPointerUp: handlePointerUp,
+            onClick: handleClick,
+          }
+        : { onClick: userOnClick })}
+      // spread the rest (excluding the handlers we already consumed)
+      {...Object.fromEntries(
+        Object.entries(rest).filter(
+          ([k]) =>
+            !["onClick", "onPointerDown", "onPointerMove", "onPointerUp", "type"].includes(
+              k,
+            ),
+        ),
+      )}
     />
   );
 });
