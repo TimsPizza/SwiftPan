@@ -108,8 +108,6 @@ async function refreshDownloadStatus(id: string) {
 function handleUploadEvent(ev: UploadEvent) {
   const id = ev.transfer_id;
   const s = useTransferStore.getState();
-  const ua = (globalThis as any)?.navigator?.userAgent || "";
-  const isAndroid = /Android/i.test(String(ua));
   const keyOrName = () => {
     try {
       const item = useTransferStore.getState().items[id];
@@ -281,7 +279,9 @@ async function handleDownloadEvent(ev: DownloadEvent) {
       {
         const k = keyOrName();
         const msg = ev.error?.message ? `: ${ev.error.message}` : "";
-        toast.error(k ? `Download failed (${k})${msg}` : `Download failed${msg}`);
+        toast.error(
+          k ? `Download failed (${k})${msg}` : `Download failed${msg}`,
+        );
       }
       break;
     }

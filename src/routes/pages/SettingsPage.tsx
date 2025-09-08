@@ -22,7 +22,6 @@ export default function SettingsPage() {
     uploadThumbnail,
     setLogLevel,
     setMaxConcurrency,
-    setDefaultDownloadDir,
     setUploadThumbnail,
   } = useAppStore();
   const {

@@ -1,0 +1,164 @@
+name: Build Desktop + Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Create/Update GitHub Release with built artifacts"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  # Force CI so tools behave non-interactively
+  CI: true
+
+jobs:
+  build-desktop:
+    name: Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable Corepack (pnpm)
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend (to match tauri.conf.json)
+        run: pnpm build -- --outDir build
+
+      - name: Tauri bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: .
+          tauriScript: pnpm tauri
+          args: build
+
+      - name: List bundles
+        run: |
+          echo "Bundled artifacts:"
+          ls -R src-tauri/target/release/bundle || true
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftpan-${{ matrix.os }}-bundles
+          path: |
+            src-tauri/target/release/bundle/**
+          if-no-files-found: error
+
+  build-android:
+    name: Android (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable Corepack (pnpm)
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend (to match tauri.conf.json)
+        run: pnpm build -- --outDir build
+
+      - name: Setup Java (JDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.1.10909125"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - name: Build Android (APK and AAB)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
+        run: |
+          # Build release artifacts. Produces APK and AAB under gen/android outputs
+          pnpm tauri android build
+
+      - name: Collect Android artifacts
+        run: |
+          echo "Android outputs:"
+          find src-tauri/gen/android/app/build/outputs -type f -maxdepth 3 -print || true
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftpan-android-outputs
+          path: |
+            src-tauri/gen/android/app/build/outputs/**
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build-desktop, build-android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.publish_release == 'true'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: swiftpan-*
+          merge-multiple: true
+
+      - name: List gathered files
+        run: |
+          echo "Files to publish:"
+          ls -R
+
+      - name: Create/Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            **/*
+          draft: false
+          # Mark pre-release when the tag name contains -beta or -rc
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

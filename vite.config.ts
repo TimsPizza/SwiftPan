@@ -19,6 +19,10 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // Ensure the output directory matches `src-tauri/tauri.conf.json` frontendDist (../build)
+  build: {
+    outDir: "build",
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 5173,
