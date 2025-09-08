@@ -1,4 +1,4 @@
-package com.tauri.dev
+package com.timspizza.swiftpan
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
