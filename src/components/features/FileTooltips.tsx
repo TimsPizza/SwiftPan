@@ -98,7 +98,7 @@ const FileDownloadDeleteTooltip = ({
       id="file-download-delete-tooltip"
       ref={boxRef}
       className={cn(
-        "fixed z-50 hidden w-[80vw] rounded-full border bg-white/10 px-3 py-2 backdrop-blur-md md:hidden dark:bg-black/10",
+        "fixed z-50 hidden w-[80vw] rounded-full border bg-white/10 px-3 py-2 backdrop-blur-md md:hidden! dark:bg-black/10",
         drag.active ? "cursor-grabbing" : "cursor-default",
         selectedFiles.length > 0 && "block!",
       )}
@@ -156,7 +156,7 @@ const FileMultiSelectTooltip = ({
     <div
       id="file-multi-select-tooltip"
       className={cn(
-        "fixed top-0 left-1/2 z-50 hidden w-full -translate-x-1/2 justify-between border bg-white/30 px-4 py-2 backdrop-blur-md md:hidden dark:bg-black/30",
+        "fixed top-0 left-1/2 z-50 hidden w-full -translate-x-1/2 justify-between border bg-white/30 px-4 py-2 backdrop-blur-md md:hidden! dark:bg-black/30",
         selectedFiles.length > 0 && "flex!",
       )}
       style={{ top: "calc(var(--resolved-safe-top, 0px) + 42px)" }}

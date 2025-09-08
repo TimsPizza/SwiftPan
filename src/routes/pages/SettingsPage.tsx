@@ -1,4 +1,11 @@
 import { Button } from "@/components/ui/Button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -209,20 +216,27 @@ export default function SettingsPage() {
         <TabsContent value="app">
           <div className="mt-4 grid max-w-xl grid-cols-2 gap-2">
             <label className="text-sm">Log level</label>
-            <select
-              className="w-full rounded border px-2 py-1"
-              value={logLevel}
-              onChange={(e) => {
-                setLogLevel(e.target.value);
-                void nv.log_set_level(e.target.value as any);
-              }}
-            >
-              <option value="trace">trace</option>
-              <option value="debug">debug</option>
-              <option value="info">info</option>
-              <option value="warn">warn</option>
-              <option value="error">error</option>
-            </select>
+            <div className="flex items-center gap-2">
+              <Select
+                className="w-full rounded border px-2 py-1"
+                value={logLevel}
+                onValueChange={(v: string) => {
+                  setLogLevel(v);
+                  void nv.log_set_level(v as any);
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="log level" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="trace">trace</SelectItem>
+                  <SelectItem value="debug">debug</SelectItem>
+                  <SelectItem value="info">info</SelectItem>
+                  <SelectItem value="warn">warn</SelectItem>
+                  <SelectItem value="error">error</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
             <label className="text-sm">Max concurrency</label>
             <input

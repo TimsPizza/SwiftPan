@@ -214,8 +214,8 @@ export default function UsagePage() {
                   <TableHead className="hidden lg:table-cell">
                     Deleted
                   </TableHead>
-                  <TableHead className="text-right">Class A Ops</TableHead>
-                  <TableHead className="text-right">Class B Ops</TableHead>
+                  <TableHead className="text-center">Class A</TableHead>
+                  <TableHead className="text-center">Class B</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -252,10 +252,10 @@ export default function UsagePage() {
                         <TableCell className="hidden lg:table-cell">
                           {formatBytes(Number(d.deleted_storage_bytes || 0))}
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="text-center">
                           {aOps.toLocaleString()}
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell className="text-center">
                           {bOps.toLocaleString()}
                         </TableCell>
                       </TableRow>
@@ -299,7 +299,7 @@ export default function UsagePage() {
                       )
                       .toLocaleString()}
                   </TableCell>
-                  <TableCell className="text-right font-medium">
+                  <TableCell className="text-center font-medium">
                     {items
                       .reduce(
                         (acc: number, d: any) =>

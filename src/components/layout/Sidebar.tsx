@@ -1,11 +1,6 @@
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
-import {
-  BarChartIcon,
-  DashboardIcon,
-  FileIcon,
-  GearIcon,
-} from "@radix-ui/react-icons";
+import { BarChartIcon, FileIcon, GearIcon } from "@radix-ui/react-icons";
 import {
   ClipboardClockIcon,
   CodeIcon,
@@ -40,8 +35,8 @@ export const Sidebar = () => {
     >
       <div className="flex min-h-0 flex-1 flex-col gap-2">
         <div className="mb-4 flex items-center gap-2 px-2">
-          <DashboardIcon className="text-sidebar-primary h-5 w-5" />
-          <h2 className="text-lg font-semibold tracking-tight">Navigation</h2>
+          <img src="brand.png" className="text-sidebar-primary size-10" />
+          <h2 className="text-lg font-semibold tracking-tight">SwiftPan</h2>
         </div>
 
         {navItems.map((item) => {

@@ -226,10 +226,6 @@ impl SpBackend {
             }
         })?;
         if let Some(b) = &st.creds {
-            crate::logger::debug(
-                "sp_backend",
-                "get_decrypted_bundle_if_unlocked returning bundle",
-            );
             return Ok(b.clone());
         }
         drop(st);
