@@ -73,12 +73,10 @@ jobs:
         run: pnpm build
 
       - name: Tauri bundle
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: .
-          tauriScript: pnpm tauri
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Tauri app
+        run: pnpm tauri build
 
       - name: List bundles
         run: |
@@ -131,8 +129,14 @@ jobs:
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
-            "build-tools;34.0.0" \
-            "ndk;26.1.10909125"
+            "build-tools;34.0.0"
+
+      - name: Setup Android NDK (r26d)
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d # 26.1.10909125
+          add-to-path: true
+          local-cache: true
 
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses
@@ -153,10 +157,6 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Build Android (APK and AAB)
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
-          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
         run: |
           # Build release artifacts. Produces APK and AAB under gen/android outputs
           pnpm tauri android build
