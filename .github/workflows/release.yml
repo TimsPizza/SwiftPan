@@ -132,11 +132,19 @@ jobs:
             "build-tools;34.0.0"
 
       - name: Setup Android NDK (r26d)
+        id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r26d # 26.1.10909125
           add-to-path: true
           local-cache: true
+          link-to-sdk: true
+
+      - name: Export NDK env
+        run: |
+          echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses
@@ -156,7 +164,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
+      - name: Show Android NDK env
+        run: |
+          echo "NDK_HOME=$NDK_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          if [ -n "$NDK_HOME" ]; then ls -la "$NDK_HOME" || true; fi
+          if [ -n "$ANDROID_NDK_HOME" ]; then ls -la "$ANDROID_NDK_HOME" || true; fi
+          if [ -n "$ANDROID_NDK_ROOT" ]; then ls -la "$ANDROID_NDK_ROOT" || true; fi
+
       - name: Build Android (APK and AAB)
+        env:
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           # Build release artifacts. Produces APK and AAB under gen/android outputs
           pnpm tauri android build
