@@ -12,6 +12,12 @@ on:
         default: "false"
         type: choice
         options: ["false", "true"]
+      target:
+        description: "Build target set"
+        required: false
+        default: android
+        type: choice
+        options: [all, android, ubuntu, macos-arm, windows]
   push:
     tags:
       - "v*.*.*"
@@ -21,13 +27,12 @@ env:
   CI: true
 
 jobs:
-  build-desktop:
-  if: ${{ false }} # temporarily disabled to save CI minutes
-    name: Desktop (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+  build-desktop-ubuntu:
+    name: Desktop (Ubuntu)
+    runs-on: ubuntu-latest
+    if: |
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'ubuntu'))
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,7 +48,6 @@ jobs:
           version: 9
 
       - name: Install Linux dependencies (gtk/webkit)
-        if: matrix.os == 'ubuntu-latest'
         run: |
           set -euxo pipefail
           sudo apt-get update
@@ -73,21 +77,96 @@ jobs:
       - name: Build frontend (to match tauri.conf.json)
         run: pnpm build
 
-      - name: Tauri bundle
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build Tauri app
         run: pnpm tauri build
 
-      - name: List bundles
-        run: |
-          echo "Bundled artifacts:"
-          ls -R src-tauri/target/release/bundle || true
-
-      - name: Upload desktop artifacts
+      - name: Upload desktop artifacts (Ubuntu)
         uses: actions/upload-artifact@v4
         with:
-          name: swiftpan-${{ matrix.os }}-bundles
+          name: swiftpan-ubuntu-bundles
+          path: |
+            src-tauri/target/release/bundle/**
+          if-no-files-found: error
+
+  build-desktop-macos-arm:
+    name: Desktop (macOS arm)
+    runs-on: macos-14
+    if: |
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'macos-arm'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend (to match tauri.conf.json)
+        run: pnpm build
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Tauri app
+        run: pnpm tauri build
+
+      - name: Upload desktop artifacts (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftpan-macos-bundles
+          path: |
+            src-tauri/target/release/bundle/**
+          if-no-files-found: error
+
+  build-desktop-windows:
+    name: Desktop (Windows)
+    runs-on: windows-latest
+    if: |
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'windows'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend (to match tauri.conf.json)
+        run: pnpm build
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Tauri app
+        run: pnpm tauri build
+
+      - name: Upload desktop artifacts (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftpan-windows-bundles
           path: |
             src-tauri/target/release/bundle/**
           if-no-files-found: error
@@ -95,6 +174,9 @@ jobs:
   build-android:
     name: Android (Ubuntu)
     runs-on: ubuntu-latest
+    if: |
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'android'))
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -199,7 +281,13 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: [build-android]
+    needs:
+      [
+        build-android,
+        build-desktop-ubuntu,
+        build-desktop-macos-arm,
+        build-desktop-windows,
+      ]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.publish_release == 'true'
     steps:
@@ -229,12 +317,15 @@ jobs:
             }
             try {
               const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag: refName });
-              const allowed = [
+              const target = (process.env.INPUT_TARGET || (context.payload?.inputs && context.payload.inputs.target) || 'android');
+              // Only allow android assets for now
+              const allowedAndroid = [
                 /\.apk$/i,
                 /\.aab$/i,
                 /(^|\/)output-metadata\.json$/i,
                 /(^|\/)mapping\.txt$/i
               ];
+              const allowed = allowedAndroid;
               for (const asset of release.assets) {
                 const keep = allowed.some((re) => re.test(asset.name));
                 if (!keep) {
