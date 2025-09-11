@@ -36,6 +36,7 @@ let type;
 let dryRun = false;
 let noPush = false;
 let dispatch = false;
+let target = 'android'; // build target for workflow_dispatch
 
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
@@ -51,6 +52,15 @@ for (let i = 0; i < args.length; i++) {
   if (a === '--dry-run') { dryRun = true; continue; }
   if (a === '--no-push') { noPush = true; continue; }
   if (a === '--dispatch') { dispatch = true; continue; }
+  if (a === '--target') {
+    if (i + 1 >= args.length) fail('Missing value for --target');
+    target = args[++i];
+    continue;
+  }
+  if (a.startsWith('--target=')) {
+    target = a.slice('--target='.length);
+    continue;
+  }
   if (!a.startsWith('--') && ['beta','patch','minor','major','release'].includes(a) && !type) {
     type = a;
     continue;
@@ -58,8 +68,13 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (!type) {
-  console.log('Usage: pnpm release --type <beta|patch|minor|major|release> [--dry-run] [--no-push] [--dispatch]');
+  console.log('Usage: pnpm release --type <beta|patch|minor|major|release> [--dry-run] [--no-push] [--dispatch] [--target <all|android|ubuntu|macos-arm|windows>]');
   process.exit(1);
+}
+
+const allowedTargets = ['all','android','ubuntu','macos-arm','windows'];
+if (!allowedTargets.includes(target)) {
+  fail(`Invalid --target '${target}'. Allowed: ${allowedTargets.join(', ')}`);
 }
 
 // Semver helpers
@@ -189,7 +204,9 @@ if (dispatch) {
     log('gh CLI not found or not authenticated; skipping workflow dispatch.');
   } else {
     log('Dispatching GitHub Actions workflow: Build Desktop + Android');
-    tryExec('gh', ['workflow', 'run', 'Build Desktop + Android', '-f', 'publish_release=true']);
+  const dispatchArgs = ['workflow','run','Build Desktop + Android','-f',`publish_release=true`,'-f',`target=${target}`];
+  log(`gh ${dispatchArgs.join(' ')}`);
+  tryExec('gh', dispatchArgs);
   }
 }
 
