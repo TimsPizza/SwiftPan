@@ -4,6 +4,11 @@ permissions:
   contents: write
 
 on:
+  push:
+    branches:
+      - "release-*"
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       publish_release:
@@ -13,14 +18,11 @@ on:
         type: choice
         options: ["false", "true"]
       target:
-        description: "Build target set"
+        description: "Build target set (workflow_dispatch only)"
         required: false
         default: android
         type: choice
         options: [all, android, ubuntu, macos-arm, windows]
-  push:
-    tags:
-      - "v*.*.*"
 
 env:
   # Force CI so tools behave non-interactively
@@ -30,9 +32,7 @@ jobs:
   build-desktop-ubuntu:
     name: Desktop (Ubuntu)
     runs-on: ubuntu-latest
-    if: |
-      startsWith(github.ref, 'refs/tags/') ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'ubuntu'))
+    if: ${{ startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,6 +80,31 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Normalize MSI version (numeric prerelease)
+        shell: pwsh
+        run: |
+          node - <<'EOF'
+          const fs = require('fs');
+          const p = 'src-tauri/tauri.conf.json';
+          if(!fs.existsSync(p)){ console.log('tauri.conf.json missing'); process.exit(0); }
+          const j = JSON.parse(fs.readFileSync(p,'utf8'));
+          const v = j.version;
+          // Accept formats like 1.2.3-beta.4 or 1.2.3-rc.5; convert to 1.2.3-4 / 1.2.3-5 because WiX needs numeric-only prerelease.
+          const m = v.match(/^([0-9]+)\.([0-9]+)\.([0-9]+)-(?:[A-Za-z]+\.)?([0-9]+)$/);
+          if(m){
+            const newV = `${m[1]}.${m[2]}.${m[3]}-${m[4]}`;
+            if(newV !== v){
+              j.version = newV;
+              fs.writeFileSync(p, JSON.stringify(j,null,2));
+              console.log(`Adjusted version for MSI: ${v} -> ${newV}`);
+            } else {
+              console.log('Version already numeric-only prerelease:', v);
+            }
+          } else {
+            console.log('No MSI version normalization needed for', v);
+          }
+          EOF
+
       - name: Build Tauri app
         run: pnpm tauri build
 
@@ -87,16 +112,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: swiftpan-ubuntu-bundles
+          compression-level: 0
           path: |
-            src-tauri/target/release/bundle/**
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.appimage
+            src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: error
 
   build-desktop-macos-arm:
     name: Desktop (macOS arm)
     runs-on: macos-14
-    if: |
-      startsWith(github.ref, 'refs/tags/') ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'macos-arm'))
+    if: ${{ startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -127,16 +154,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: swiftpan-macos-bundles
+          compression-level: 0
           path: |
-            src-tauri/target/release/bundle/**
+            src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
   build-desktop-windows:
     name: Desktop (Windows)
     runs-on: windows-latest
-    if: |
-      startsWith(github.ref, 'refs/tags/') ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'windows'))
+    if: ${{ startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -167,16 +193,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: swiftpan-windows-bundles
+          compression-level: 0
           path: |
-            src-tauri/target/release/bundle/**
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.MSI
           if-no-files-found: error
 
   build-android:
     name: Android (Ubuntu)
     runs-on: ubuntu-latest
-    if: |
-      startsWith(github.ref, 'refs/tags/') ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == 'android'))
+    if: ${{ startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/v') }}
+    environment: ANDROID_KEYSTORE_B64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -257,6 +284,29 @@ jobs:
           if [ -n "$ANDROID_NDK_HOME" ]; then ls -la "$ANDROID_NDK_HOME" || true; fi
           if [ -n "$ANDROID_NDK_ROOT" ]; then ls -la "$ANDROID_NDK_ROOT" || true; fi
 
+      - name: Prepare Android keystore (if secrets present)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${ANDROID_KEYSTORE_B64:-}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD:-}" ]; then
+            mkdir -p src-tauri/gen/android
+            echo "Decoding keystore into working directory" >&2
+            echo "$ANDROID_KEYSTORE_B64" | base64 -d > src-tauri/gen/android/swiftpan-release.jks
+            KEY_ALIAS_VALUE="${ANDROID_KEY_ALIAS:-swiftpan_release}"
+            {
+              printf 'password=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+              printf 'keyAlias=%s\n' "$KEY_ALIAS_VALUE"
+              printf 'storeFile=%s/src-tauri/gen/android/swiftpan-release.jks\n' "$GITHUB_WORKSPACE"
+            } > src-tauri/gen/android/keystore.properties
+            chmod 600 src-tauri/gen/android/swiftpan-release.jks
+            echo "Keystore prepared (not printing any sensitive data)." >&2
+          else
+            echo "Android release signing secrets absent; will build unsigned release." >&2
+          fi
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+
       - name: Build Android (APK and AAB)
         env:
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -275,8 +325,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: swiftpan-android-outputs
+          compression-level: 0
           path: |
-            src-tauri/gen/android/app/build/outputs/**
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/release/*.apk
+            src-tauri/gen/android/app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
 
   publish:
@@ -289,7 +342,7 @@ jobs:
         build-desktop-windows,
       ]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.publish_release == 'true'
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -317,15 +370,15 @@ jobs:
             }
             try {
               const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag: refName });
-              const target = (process.env.INPUT_TARGET || (context.payload?.inputs && context.payload.inputs.target) || 'android');
-              // Only allow android assets for now
-              const allowedAndroid = [
+              const allowed = [
                 /\.apk$/i,
                 /\.aab$/i,
-                /(^|\/)output-metadata\.json$/i,
-                /(^|\/)mapping\.txt$/i
+                /\.dmg$/i,
+                /\.msi$/i,
+                /\.deb$/i,
+                /\.appimage$/i,
+                /\.rpm$/i
               ];
-              const allowed = allowedAndroid;
               for (const asset of release.assets) {
                 const keep = allowed.some((re) => re.test(asset.name));
                 if (!keep) {
@@ -343,7 +396,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src-tauri/gen/android/app/build/outputs/**/*
+            **/*.apk
+            **/*.aab
+            **/*.dmg
+            **/*.msi
+            **/*.deb
+            **/*.AppImage
+            **/*.appimage
+            **/*.rpm
           fail_on_unmatched_files: true
           draft: false
           # Mark pre-release when the tag name contains -beta or -rc
