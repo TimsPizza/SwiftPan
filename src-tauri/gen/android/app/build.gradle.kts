@@ -82,15 +82,6 @@ android {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
   }
-  // arm-v8 only
-  // splits {
-  //   abi {
-  //     isEnable = true
-  //     reset()
-  //     include("arm64-v8a")
-  //     isUniversalApk = false
-  //   }
-  // }
 
 }
 

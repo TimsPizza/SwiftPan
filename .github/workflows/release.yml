@@ -294,7 +294,8 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+          # Only build arm64 (arm64-v8a) to avoid producing universal / extra ABIs
+          targets: aarch64-linux-android
 
       - name: Cache Cargo registry + git
         uses: actions/cache@v4
@@ -325,16 +326,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Show Android NDK env
-        run: |
-          echo "NDK_HOME=$NDK_HOME"
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          if [ -n "$NDK_HOME" ]; then ls -la "$NDK_HOME" || true; fi
-          if [ -n "$ANDROID_NDK_HOME" ]; then ls -la "$ANDROID_NDK_HOME" || true; fi
-          if [ -n "$ANDROID_NDK_ROOT" ]; then ls -la "$ANDROID_NDK_ROOT" || true; fi
-
       - name: Prepare Android keystore (if secrets present)
         shell: bash
         run: |
@@ -350,7 +341,7 @@ jobs:
               printf 'storeFile=%s/src-tauri/gen/android/swiftpan-release.jks\n' "$GITHUB_WORKSPACE"
             } > src-tauri/gen/android/keystore.properties
             chmod 600 src-tauri/gen/android/swiftpan-release.jks
-            echo "Keystore prepared (not printing any sensitive data)." >&2
+            echo "Keystore prepared." >&2
           else
             echo "Android release signing secrets absent; will build unsigned release." >&2
           fi
@@ -365,7 +356,7 @@ jobs:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           # Build release artifacts. Produces APK and AAB under gen/android outputs
-          pnpm tauri android build
+          pnpm tauri android build --target aarch64
 
       - name: Collect Android artifacts
         run: |
@@ -378,8 +369,7 @@ jobs:
           name: swiftpan-android-outputs
           compression-level: 0
           path: |
-            src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
-            src-tauri/gen/android/app/build/outputs/apk/release/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/arm64-v8a/release/*.apk
             src-tauri/gen/android/app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
 
