@@ -83,6 +83,21 @@ android {
     targetCompatibility = JavaVersion.VERSION_17
   }
 
+  // Enforce only arm64-v8a build output; no universal APK
+  ndk {
+    abiFilters += listOf("arm64-v8a")
+  }
+
+  splits {
+    abi {
+      isEnable = true
+      reset()
+      include("arm64-v8a")
+      // Do NOT produce a universal (fat) apk
+      isUniversalApk = false
+    }
+  }
+
 }
 
 rust {

@@ -370,7 +370,7 @@ jobs:
           compression-level: 0
           path: |
             src-tauri/gen/android/app/build/outputs/apk/arm64-v8a/release/*.apk
-            src-tauri/gen/android/app/build/outputs/bundle/release/*.aab
+            src-tauri/gen/android/app/build/outputs/bundle/arm64V8aRelease/*.aab
           if-no-files-found: error
 
   publish:
