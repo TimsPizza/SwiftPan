@@ -48,8 +48,11 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
-    buildFeatures {
-        buildConfig = true
+  }
+  // arm-v8 only
+      reset()
+      include("arm64-v8a")
+      isUniversalApk = false
     }
 }
 
