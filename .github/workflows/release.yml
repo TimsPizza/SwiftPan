@@ -95,9 +95,9 @@ jobs:
         with:
           path: |
             src-tauri/target
-          key: ${{ runner.os }}-cargo-target-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-target-desktop-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-target-
+            ${{ runner.os }}-cargo-target-desktop-
 
       - name: Build Tauri app
         run: pnpm tauri build
@@ -312,9 +312,10 @@ jobs:
         with:
           path: |
             src-tauri/target
-          key: ${{ runner.os }}-cargo-target-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
+          # Separate key namespace from desktop to avoid contention.
+          key: ${{ runner.os }}-cargo-target-android-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-target-
+            ${{ runner.os }}-cargo-target-android-
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -369,6 +370,10 @@ jobs:
           name: swiftpan-android-outputs
           compression-level: 0
           path: |
+            # Primary expected (only --target aarch64 build): universal release outputs
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+            src-tauri/gen/android/app/build/outputs/bundle/universalRelease/*.aab
+            # Fallback patterns in case future split logic reintroduced
             src-tauri/gen/android/app/build/outputs/apk/arm64-v8a/release/*.apk
             src-tauri/gen/android/app/build/outputs/bundle/arm64V8aRelease/*.aab
           if-no-files-found: error
