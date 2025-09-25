@@ -25,6 +25,8 @@ on:
 env:
   # Force CI so tools behave non-interactively
   CI: true
+  # Increment this manually to bust the cargo target cache if it becomes stale
+  CARGO_TARGET_CACHE_BUSTER: 1
 
 jobs:
   build-desktop-ubuntu:
@@ -78,6 +80,25 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo target (release artifacts)
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-target-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
+
       - name: Build Tauri app
         run: pnpm tauri build
 
@@ -120,6 +141,25 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo target (release artifacts)
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-target-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
+
       - name: Build Tauri app
         run: pnpm tauri build
 
@@ -158,6 +198,25 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo target (release artifacts)
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-target-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
 
       - name: Build Tauri app
         run: pnpm tauri build
@@ -236,6 +295,25 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Cache Cargo registry + git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo target (release artifacts)
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-target-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
 
       - name: Cache Gradle
         uses: actions/cache@v4
