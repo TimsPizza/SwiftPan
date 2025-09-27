@@ -28,7 +28,7 @@ export function MobileSidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div
       id="mobile-sidebar-container"
-      className="text-foreground border-sidebar-border bg-background flex h-full w-[224px] flex-col pr-3"
+      className="text-foreground border-sidebar-border bg-background flex h-full w-[224px] flex-col pr-3 will-change-transform"
       style={{
         paddingTop: "var(--resolved-safe-top)",
         paddingBottom: "0.75rem",

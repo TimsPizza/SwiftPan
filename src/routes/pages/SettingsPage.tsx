@@ -46,10 +46,9 @@ export default function SettingsPage() {
     },
     mode: "onBlur",
   });
-  const [msg, setMsg] = useState<{
-    msg: string;
-    isError: boolean;
-  } | null>(null);
+  const [msg, setMsg] = useState<{ msg: string; isError: boolean } | null>(
+    null,
+  );
   const [redacted, setRedacted] = useState<null | {
     endpoint: string;
     access_key_id: string;
@@ -122,7 +121,7 @@ export default function SettingsPage() {
             <label className="text-sm">Endpoint</label>
             <div>
               <input
-                className="w-full rounded border px-2 py-1"
+                className="text-foreground w-full rounded border px-2 py-1"
                 placeholder={
                   redacted?.endpoint ||
                   "https://<account>.r2.cloudflarestorage.com"
@@ -139,7 +138,7 @@ export default function SettingsPage() {
             <label className="text-sm">Access Key ID</label>
             <div>
               <input
-                className="w-full rounded border px-2 py-1"
+                className="text-foreground w-full rounded border px-2 py-1"
                 placeholder={redacted?.access_key_id || "Access Key ID"}
                 {...register("access_key_id")}
               />
@@ -153,7 +152,7 @@ export default function SettingsPage() {
             <label className="text-sm">Secret Access Key</label>
             <div>
               <input
-                className="w-full rounded border px-2 py-1"
+                className="text-foreground w-full rounded border px-2 py-1"
                 type="password"
                 placeholder={redacted?.secret_access_key || "Secret Access Key"}
                 {...register("secret_access_key")}
@@ -168,7 +167,7 @@ export default function SettingsPage() {
             <label className="text-sm">Bucket</label>
             <div>
               <input
-                className="w-full rounded border px-2 py-1"
+                className="text-foreground w-full rounded border px-2 py-1"
                 placeholder={redacted?.bucket || "Bucket"}
                 {...register("bucket")}
               />
@@ -182,7 +181,7 @@ export default function SettingsPage() {
             <label className="text-sm">Region</label>
             <div>
               <input
-                className="w-full rounded border px-2 py-1"
+                className="text-foreground w-full rounded border px-2 py-1"
                 placeholder={redacted?.region || "Region"}
                 {...register("region")}
               />
@@ -240,34 +239,13 @@ export default function SettingsPage() {
 
             <label className="text-sm">Max concurrency</label>
             <input
-              className="w-full rounded border px-2 py-1"
+              className="text-foreground w-full rounded border px-2 py-1"
               type="number"
               min={1}
               max={16}
               value={maxConcurrency}
               onChange={(e) => setMaxConcurrency(Number(e.target.value) || 1)}
             />
-            {/* deprecated */}
-            {/* <label className="text-sm">Default download directory</label>
-            <div className="flex items-center gap-2">
-              <input
-                className="w-full rounded border px-2 py-1"
-                placeholder="/path/to/downloads"
-                value={defaultDownloadDir || ""}
-                onChange={(e) => setDefaultDownloadDir(e.target.value || null)}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                onClick={async () => {
-                  const { open } = await import("@tauri-apps/plugin-dialog");
-                  const pick = await open({ directory: true, multiple: false });
-                  if (pick) setDefaultDownloadDir(String(pick));
-                }}
-              >
-                Choose…
-              </Button>
-            </div> */}
 
             <label className="text-sm">{`Upload thumbnail alongside file (Not implementd)`}</label>
             <div>

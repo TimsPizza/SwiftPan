@@ -202,7 +202,7 @@ export default function UsagePage() {
             </div>
           ) : items && items.length > 0 ? (
             <Table>
-              <TableHeader>
+              <TableHeader className="bg-background sticky top-0">
                 <TableRow>
                   <TableHead className="w-28">Date</TableHead>
                   <TableHead>Upload</TableHead>

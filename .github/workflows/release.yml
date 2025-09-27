@@ -156,9 +156,9 @@ jobs:
         with:
           path: |
             src-tauri/target
-          key: ${{ runner.os }}-cargo-target-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-target-desktop-${{ env.CARGO_TARGET_CACHE_BUSTER }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-target-
+            ${{ runner.os }}-cargo-target-desktop-
 
       - name: Build Tauri app
         run: pnpm tauri build
@@ -401,56 +401,42 @@ jobs:
           echo "Files to publish:"
           ls -R
 
-      - name: Clean existing release assets (keep only Android outputs)
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const ref = context.ref;
-            const refName = ref.startsWith('refs/tags/') ? ref.replace('refs/tags/', '') : process.env.GITHUB_REF_NAME || context.payload?.ref || '';
-            if (!refName) {
-              core.info('No tag name detected; skipping cleanup.');
-              return;
-            }
-            try {
-              const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag: refName });
-              const allowed = [
-                /\.apk$/i,
-                /\.aab$/i,
-                /\.dmg$/i,
-                /\.msi$/i,
-                /\.deb$/i,
-                /\.appimage$/i,
-                /\.rpm$/i
-              ];
-              for (const asset of release.assets) {
-                const keep = allowed.some((re) => re.test(asset.name));
-                if (!keep) {
-                  core.info(`Deleting non-Android asset: ${asset.name} (id=${asset.id})`);
-                  await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id });
-                } else {
-                  core.info(`Keeping asset: ${asset.name}`);
-                }
-              }
-            } catch (err) {
-              core.warning(`Cleanup skipped: ${err?.status || ''} ${err?.message || err}`);
-            }
+      - name: Collect release files
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          # Patterns we care about
+          patterns=(
+            "**/*.apk"
+            "**/*.aab"
+            "**/*.dmg"
+            "**/*.[mM][sS][iI]"
+            "**/*.[dD][eE][bB]"
+            "**/*.AppImage" "**/*.appimage"
+            "**/*.[rR][pP][mM]"
+          )
+          files=()
+          for pat in "${patterns[@]}"; do
+            for f in $pat; do
+              [[ -f "$f" ]] && files+=("$f")
+            done
+          done
+          echo "Found ${#files[@]} release files"
+          # Emit multi-line output
+          {
+            echo "files<<EOF"
+            printf '%s\n' "${files[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create/Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            **/*.apk
-            **/*.aab
-            **/*.dmg
-            **/*.msi
-            **/*.deb
-            **/*.AppImage
-            **/*.appimage
-            **/*.rpm
-          fail_on_unmatched_files: true
+          files: ${{ steps.collect.outputs.files }}
+          fail_on_unmatched_files: false
+          overwrite_files: true
           draft: false
           # Mark pre-release when the tag name contains -beta or -rc
           prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
