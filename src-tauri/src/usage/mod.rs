@@ -1,7 +1,7 @@
 use crate::types::*;
 pub mod http_instrument;
 use crate::{r2_client, sp_backend::SpBackend};
-use chrono::Datelike;
+use chrono::NaiveDate;
 // use directories::ProjectDirs;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -168,38 +168,35 @@ impl UsageSync {
         let client = r2_client::build_client(&bundle.r2).await?;
         let key = format!("{}{}.json", ANALYTICS_PREFIX, date);
 
-        // Ensure file exists (with month-initial baseline if needed)
-        let _ = r2_client::put_object_bytes(
-            &client,
-            &key,
-            serde_json::to_vec(&initial_ledger_with_baseline(&client, date).await?).map_err(
-                |e| SpError {
+        let (mut day, etag) = match r2_client::get_object_bytes_opt(&client, &key).await? {
+            Some((bytes, etag)) => {
+                let parsed: DailyLedger = serde_json::from_slice(&bytes).unwrap_or(DailyLedger {
+                    date: date.into(),
+                    class_a: Default::default(),
+                    class_b: Default::default(),
+                    ingress_bytes: 0,
+                    egress_bytes: 0,
+                    storage_bytes: 0,
+                    peak_storage_bytes: 0,
+                    deleted_storage_bytes: 0,
+                    rev: 1,
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                });
+                (parsed, etag)
+            }
+            None => {
+                let seeded = initial_ledger_with_baseline(&client, date).await?;
+                let seed_bytes = serde_json::to_vec(&seeded).map_err(|e| SpError {
                     kind: ErrorKind::NotRetriable,
                     message: format!("serialize empty ledger failed: {e}"),
                     retry_after_ms: None,
                     context: None,
                     at: chrono::Utc::now().timestamp_millis(),
-                },
-            )?,
-            None,
-            true,
-        )
-        .await;
-
-        // GET current
-        let (bytes, etag) = r2_client::get_object_bytes(&client, &key).await?;
-        let mut day: DailyLedger = serde_json::from_slice(&bytes).unwrap_or(DailyLedger {
-            date: date.into(),
-            class_a: Default::default(),
-            class_b: Default::default(),
-            ingress_bytes: 0,
-            egress_bytes: 0,
-            storage_bytes: 0,
-            peak_storage_bytes: 0,
-            deleted_storage_bytes: 0,
-            rev: 1,
-            updated_at: chrono::Utc::now().to_rfc3339(),
-        });
+                })?;
+                r2_client::put_object_bytes(&client, &key, seed_bytes, None, true).await?;
+                (seeded, None)
+            }
+        };
         for (k, v) in local.class_a {
             *day.class_a.entry(k).or_insert(0) += v;
         }
@@ -450,27 +447,20 @@ async fn initial_ledger_with_baseline(
     client: &crate::r2_client::R2Client,
     date: &str,
 ) -> SpResult<DailyLedger> {
-    // Determine if this is month start
-    let is_month_start = date.ends_with("-01");
-    let mut baseline_storage: u64 = 0;
-    if is_month_start {
-        // Try inherit from previous month last day
-        if let Some(prev_day) = prev_month_last_day(date) {
-            let prev_key = format!("{}{}.json", ANALYTICS_PREFIX, prev_day);
-            if let Ok((bytes, _)) = r2_client::get_object_bytes(client, &prev_key).await {
-                if let Ok(prev) = serde_json::from_slice::<DailyLedger>(&bytes) {
-                    // baseline = peak_storage_bytes - deleted_storage_bytes (policy)
-                    baseline_storage = prev
-                        .peak_storage_bytes
-                        .saturating_sub(prev.deleted_storage_bytes);
-                }
-            }
-        }
-        // If no prior ledger, fallback to full bucket scan
-        if baseline_storage == 0 {
-            baseline_storage = compute_bucket_total_storage(client).await?;
-        }
-    }
+    let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("invalid ledger date {date}: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+
+    let baseline_storage = if let Some(prev) = latest_ledger_before(client, parsed).await? {
+        prev.storage_bytes
+    } else {
+        compute_bucket_total_storage(client).await?
+    };
+
     Ok(DailyLedger {
         date: date.into(),
         class_a: Default::default(),
@@ -485,12 +475,24 @@ async fn initial_ledger_with_baseline(
     })
 }
 
-fn prev_month_last_day(date: &str) -> Option<String> {
-    // date in YYYY-MM-DD UTC
-    let dt = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
-    let first = chrono::NaiveDate::from_ymd_opt(dt.year(), dt.month(), 1)?;
-    let prev = first.pred_opt()?; // last day of previous month
-    Some(prev.format("%Y-%m-%d").to_string())
+async fn latest_ledger_before(
+    client: &crate::r2_client::R2Client,
+    date: NaiveDate,
+) -> SpResult<Option<DailyLedger>> {
+    let mut probe = date;
+    for _ in 0..62 {
+        let Some(prev) = probe.pred_opt() else {
+            break;
+        };
+        probe = prev;
+        let key = format!("{}{}.json", ANALYTICS_PREFIX, probe.format("%Y-%m-%d"));
+        if let Some((bytes, _)) = r2_client::get_object_bytes_opt(client, &key).await? {
+            if let Ok(ledger) = serde_json::from_slice::<DailyLedger>(&bytes) {
+                return Ok(Some(ledger));
+            }
+        }
+    }
+    Ok(None)
 }
 
 async fn compute_bucket_total_storage(client: &crate::r2_client::R2Client) -> SpResult<u64> {
