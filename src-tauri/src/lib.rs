@@ -16,6 +16,8 @@ pub fn run() {
             crate::logger::log_get_status,
             crate::bridge::backend_status,
             crate::bridge::backend_credentials_redacted,
+            crate::bridge::backend_export_credentials_package,
+            crate::bridge::backend_import_credentials_package,
             crate::bridge::backend_set_credentials,
             crate::bridge::backend_patch_credentials,
             crate::bridge::vault_status,     // legacy shim
@@ -48,6 +50,7 @@ pub fn run() {
             crate::bridge::android_pick_download_dir,
             crate::bridge::android_get_persisted_download_dir,
             crate::bridge::android_copy_from_path_to_tree,
+            crate::bridge::android_fs_copy,
             crate::bridge::android_pick_upload_files,
             crate::bridge::android_upload_from_uri,
         ])

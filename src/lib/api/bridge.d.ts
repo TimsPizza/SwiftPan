@@ -26,11 +26,11 @@ export type BackendState = {
   is_unlocked: boolean;
   unlock_deadline_ms?: number;
   device_id: string;
+  is_credential_completed: boolean;
+  is_credential_valid: boolean;
 };
 export type CredentialBundle = {
   r2: R2Config;
-  device_id: string;
-  created_at: number;
 };
 
 export type NewUploadParams = {
@@ -99,6 +99,10 @@ export type ShareParams = {
   download_filename?: string;
 };
 export type ShareLink = { url: string; expires_at_ms: number };
+
+export type CredentialExportPayload = {
+  encoded: string;
+};
 
 export type UsageDelta = {
   class_a: Record<string, number>;

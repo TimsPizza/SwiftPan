@@ -7,6 +7,7 @@ export interface AppSettingsState {
   defaultDownloadDir: string | null;
   uploadThumbnail: boolean;
   androidTreeUri?: string | null;
+  isCredentialValid: boolean;
 
   // Mutators
   setSettings: (s: Partial<AppSettingsState>) => void;
@@ -23,6 +24,7 @@ export const useAppStore = create<AppSettingsState>((set) => ({
   defaultDownloadDir: null,
   uploadThumbnail: false,
   androidTreeUri: null,
+  isCredentialValid: false,
 
   setSettings: (s) =>
     set((state) => ({

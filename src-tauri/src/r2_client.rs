@@ -2,6 +2,7 @@ use crate::types::*;
 use crate::usage::UsageSync;
 use once_cell::sync::Lazy;
 use opendal::services::S3;
+use opendal::ErrorKind as OdErrorKind;
 use opendal::{layers::HttpClientLayer, raw::HttpClient, Operator};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -391,24 +392,49 @@ pub async fn delete_object(client: &R2Client, key: &str) -> SpResult<String> {
 }
 
 pub async fn get_object_bytes(client: &R2Client, key: &str) -> SpResult<(Vec<u8>, Option<String>)> {
-    let data = client.op.read(key).await.map_err(|e| {
-        crate::logger::error("r2", &format!("GetObject error: {}", e));
-        SpError {
-            kind: ErrorKind::RetryableNet,
-            message: format!("GetObject: {e}"),
-            retry_after_ms: Some(500),
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+    match get_object_bytes_opt(client, key).await? {
+        Some(v) => Ok(v),
+        None => {
+            crate::logger::error("r2", &format!("GetObject not found: {}", key));
+            Err(SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("GetObject: not found: {key}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })
         }
-    })?;
-    let etag = client
-        .op
-        .stat(key)
-        .await
-        .ok()
-        .and_then(|m| m.etag().map(|s| s.to_string()));
-    // Op and egress bytes are tracked by HTTP layer.
-    Ok((data.to_vec(), etag))
+    }
+}
+
+pub async fn get_object_bytes_opt(
+    client: &R2Client,
+    key: &str,
+) -> SpResult<Option<(Vec<u8>, Option<String>)>> {
+    match client.op.read(key).await {
+        Ok(data) => {
+            let etag = client
+                .op
+                .stat(key)
+                .await
+                .ok()
+                .and_then(|m| m.etag().map(|s| s.to_string()));
+            Ok(Some((data.to_vec(), etag)))
+        }
+        Err(err) => {
+            if matches!(err.kind(), OdErrorKind::NotFound) {
+                return Ok(None);
+            }
+            crate::logger::error("r2", &format!("GetObject error: {}", err));
+            Err(SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("GetObject: {err}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })
+        }
+    }
 }
 
 pub async fn put_object_bytes(

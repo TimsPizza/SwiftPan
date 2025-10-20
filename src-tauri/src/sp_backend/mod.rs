@@ -1,4 +1,5 @@
 use crate::types::*;
+use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::XChaCha20Poly1305;
@@ -9,6 +10,8 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+const EXPORT_SECRET: &str = "swiftpan-export-v1";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CredentialBundle {
@@ -32,6 +35,8 @@ pub struct BackendState {
     pub is_unlocked: bool,
     pub unlock_deadline_ms: Option<u64>,
     pub device_id: DeviceId,
+    pub is_credential_completed: bool, // all fields non-empty
+    pub is_credential_valid: bool,     // validated by testing r2 client
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -199,12 +204,102 @@ impl SpBackend {
             at: chrono::Utc::now().timestamp_millis(),
         }
     }
-    pub fn export_package(_master_password: &str) -> SpResult<BackendPackage> {
-        Err(err_not_implemented("backend.export_package"))
+    pub fn export_package() -> SpResult<BackendPackage> {
+        let bundle = Self::get_decrypted_bundle_if_unlocked()?;
+        let plaintext = serde_json::to_vec(&bundle).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("serialize bundle: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+
+        const MEM_KIB: u32 = 32 * 1024;
+        const ITER: u32 = 3;
+        const PAR: u32 = 1;
+        let mut salt = [0u8; 16];
+        OsRng.fill_bytes(&mut salt);
+        let kdf = KdfParams {
+            algo: "argon2id".into(),
+            mem_kib: MEM_KIB,
+            iterations: ITER,
+            parallelism: PAR,
+            salt,
+        };
+        let key = derive_argon2_key(EXPORT_SECRET, &kdf)?;
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let mut nonce = [0u8; 24];
+        OsRng.fill_bytes(&mut nonce);
+        let ciphertext = cipher
+            .encrypt((&nonce).into(), plaintext.as_slice())
+            .map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("encrypt failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+
+        Ok(BackendPackage {
+            version: 1,
+            kdf,
+            nonce_b64: base64::engine::general_purpose::STANDARD_NO_PAD.encode(nonce),
+            ciphertext_b64: base64::engine::general_purpose::STANDARD_NO_PAD.encode(ciphertext),
+        })
     }
 
-    pub fn import_package(_pkg: BackendPackage, _master_password: &str) -> SpResult<()> {
-        Err(err_not_implemented("backend.import_package"))
+    pub fn import_package(pkg: BackendPackage) -> SpResult<()> {
+        if pkg.kdf.algo != "argon2id" {
+            return Err(SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("unsupported kdf algo: {}", pkg.kdf.algo),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+
+        let key = derive_argon2_key(EXPORT_SECRET, &pkg.kdf)?;
+        let cipher = XChaCha20Poly1305::new((&key).into());
+
+        let nonce = base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(pkg.nonce_b64.as_bytes())
+            .map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("decode nonce: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+        let ciphertext = base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(pkg.ciphertext_b64.as_bytes())
+            .map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("decode ciphertext: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+
+        let plaintext = cipher
+            .decrypt((&*nonce).into(), ciphertext.as_slice())
+            .map_err(|e| SpError {
+                kind: ErrorKind::RetryableAuth,
+                message: format!("decrypt failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+
+        let bundle: CredentialBundle = serde_json::from_slice(&plaintext).map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("decode bundle json: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+
+        Self::set_with_plaintext(bundle)
     }
 
     pub fn rotate_password(_old_pw: &str, _new_pw: &str) -> SpResult<()> {
@@ -368,6 +463,43 @@ fn load_or_create_device_key() -> SpResult<[u8; 32]> {
     Ok(key)
 }
 
+fn derive_argon2_key(password: &str, params: &KdfParams) -> SpResult<[u8; 32]> {
+    if params.mem_kib == 0 || params.iterations == 0 || params.parallelism == 0 {
+        return Err(SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "invalid argon2 params".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        });
+    }
+    let argon_params = Params::new(
+        params.mem_kib,
+        params.iterations,
+        params.parallelism,
+        Some(32),
+    )
+    .map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("argon2 params: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
+    let mut key = [0u8; 32];
+    argon2
+        .hash_password_into(password.as_bytes(), &params.salt, &mut key)
+        .map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("argon2 derive failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+    Ok(key)
+}
+
 pub(crate) fn vault_dir() -> SpResult<PathBuf> {
     if let Some(proj) = ProjectDirs::from("com", "swiftpan", "SwiftPan") {
         return Ok(proj.data_dir().to_path_buf());
@@ -397,9 +529,17 @@ fn current_state() -> BackendState {
         .ok()
         .map(|d| d.join("vault.sp").exists())
         .unwrap_or(false);
+    let is_credential_completed = g.creds.as_ref().map_or(false, |c| {
+        !c.r2.endpoint.is_empty()
+            && !c.r2.access_key_id.is_empty()
+            && !c.r2.secret_access_key.is_empty()
+            && !c.r2.bucket.is_empty()
+    });
     BackendState {
         is_unlocked: g.creds.is_some() || dir_exists,
         unlock_deadline_ms: None,
         device_id: "dev-removed".into(),
+        is_credential_completed,
+        is_credential_valid: is_credential_completed,
     }
 }

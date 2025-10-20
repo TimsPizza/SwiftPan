@@ -42,7 +42,10 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-async fn load_ledger(client: &crate::r2_client::R2Client, force_refresh: bool) -> SpResult<ShareLedger> {
+async fn load_ledger(
+    client: &crate::r2_client::R2Client,
+    force_refresh: bool,
+) -> SpResult<ShareLedger> {
     // Try local cache if not forced and fresh within 24h
     if !force_refresh {
         if let Ok(p) = cache_path() {

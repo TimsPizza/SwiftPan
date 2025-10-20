@@ -7,7 +7,7 @@ import {
   useQuery,
   UseQueryOptions,
 } from "react-query";
-import type { DailyLedger, ShareLink, UploadStatus } from "./bridge";
+import type { CredentialExportPayload, DailyLedger, ShareLink, UploadStatus } from "./bridge";
 
 export type ListPage = {
   prefix: string;
@@ -116,6 +116,12 @@ export const nv = {
       bucket: string;
       region?: string;
     }>("backend_credentials_redacted"),
+  backend_export_credentials_package: () =>
+    resultInvoke<CredentialExportPayload>("backend_export_credentials_package"),
+  backend_import_credentials_package: (encoded: string) =>
+    resultInvoke<void>("backend_import_credentials_package", {
+      encoded,
+    }),
   vault_set_manual: (bundle: unknown) =>
     resultInvoke<void>("vault_set_manual", {
       bundle,
@@ -184,9 +190,6 @@ export const nv = {
     resultInvoke<void>("upload_ctrl", { transferId, action }),
   upload_status: (transferId: string) =>
     resultInvoke<UploadStatus>("upload_status", { transferId }),
-  // deprecated
-  download_now: (key: string, destPath: string) =>
-    resultInvoke<void>("download_now", { key, destPath }),
   download_new: (params: {
     key: string;
     dest_path: string;
@@ -261,6 +264,14 @@ export const nv = {
     relative_path: string;
     mime?: string;
   }) => resultInvoke<void>("android_copy_from_path_to_tree", { params }),
+  android_fs_copy: (params: {
+    direction: "sandbox_to_tree" | "tree_to_sandbox" | "uri_to_sandbox";
+    local_path: string;
+    tree_uri?: string;
+    relative_path?: string;
+    mime?: string;
+    uri?: string;
+  }) => resultInvoke<void>("android_fs_copy", { params }),
   // Android uploads via SAF (native; avoids JS streaming)
   android_pick_upload_files: () =>
     resultInvoke<Array<{ uri: string; name: string; size?: number }>>(
@@ -393,6 +404,36 @@ export const mutations = {
     useMutation({
       mutationFn: async (date: string) => {
         await (await nv.usage_merge_day(date)).unwrapOr(undefined);
+      },
+      ...opts,
+    }),
+  useExportCredentialsPackage: (
+    opts?: UseMutationOptions<CredentialExportPayload, unknown, void>,
+  ) =>
+    useMutation({
+      mutationFn: async () => {
+        const res = await nv.backend_export_credentials_package();
+        return res.match(
+          (ok) => ok,
+          (err) => {
+            throw err;
+          },
+        );
+      },
+      ...opts,
+    }),
+  useImportCredentialsPackage: (
+    opts?: UseMutationOptions<void, unknown, { encoded: string }>,
+  ) =>
+    useMutation({
+      mutationFn: async ({ encoded }) => {
+        const res = await nv.backend_import_credentials_package(encoded);
+        return res.match(
+          () => undefined,
+          (err) => {
+            throw err;
+          },
+        );
       },
       ...opts,
     }),

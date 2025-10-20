@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/Button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -8,9 +9,10 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import {
   SettingsPatchSchema,
-  type SettingsFormValues,
+  type SettingsFormValues
 } from "@/lib/api/schemas";
 import { mutations, nv, queries } from "@/lib/api/tauriBridge";
 import { useAppStore } from "@/store/app-store";
@@ -62,6 +64,31 @@ export default function SettingsPage() {
     onSuccess: (ok) => setRedacted(ok),
     onError: () => setRedacted(null),
   });
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportEncoded, setExportEncoded] = useState("");
+  const [importEncoded, setImportEncoded] = useState("");
+
+  const exportMutation = mutations.useExportCredentialsPackage({
+    onSuccess: (payload) => {
+      setExportEncoded(payload.encoded);
+      setExportDialogOpen(true);
+      toast.success("Credential payload generated");
+    },
+    onError: (e: any) => {
+      toast.error(String(e?.message || e));
+    },
+  });
+
+  const importMutation = mutations.useImportCredentialsPackage({
+    onSuccess: async () => {
+      toast.success("Credentials imported");
+      setImportEncoded("");
+      await Promise.all([statusQ.refetch(), credsQ.refetch()]);
+    },
+    onError: (e: any) => {
+      toast.error(String(e?.message || e));
+    },
+  });
 
   const save = handleSubmit(async (values) => {
     setMsg({ msg: "", isError: false });
@@ -93,8 +120,6 @@ export default function SettingsPage() {
     toast.success("Settings saved");
   });
 
-  // Unlock flow removed — vault has no lock semantics now
-
   const saveMutation = mutations.useSaveCredentials({
     onError: (e: any) =>
       setMsg({ msg: String(e?.message || e), isError: true }),
@@ -102,12 +127,35 @@ export default function SettingsPage() {
 
   const sanityMutation = mutations.useR2Sanity({
     onSuccess: () => void toast.success("R2 connectivity OK"),
-    onError: (e: any) => {
-      // eslint-disable-next-line no-console
-      console.error("[ui] r2_sanity_check error", e);
-      setMsg({ msg: String(e?.message || e), isError: true });
-    },
   });
+
+  const handleExport = async () => {
+    await exportMutation.mutateAsync();
+  };
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(exportEncoded);
+      toast.success("Copied to clipboard");
+    } catch (err) {
+      toast.error("Failed to copy payload");
+    }
+  };
+
+  const handleImport = async () => {
+    const value = importEncoded.trim();
+    if (!value) {
+      toast.error("Paste the encoded payload first");
+      return;
+    }
+    if (redacted) {
+      const proceed = window.confirm(
+        "Existing credentials will be overwritten. Continue?",
+      );
+      if (!proceed) return;
+    }
+    await importMutation.mutateAsync({ encoded: value });
+  };
 
   return (
     <div className="space-y-3">
@@ -129,7 +177,7 @@ export default function SettingsPage() {
                 {...register("endpoint")}
               />
               {errors.endpoint && (
-                <div className="mt-1 text-xs text-red-600">
+                <div className="mt-1 text-xs text-destructive">
                   {errors.endpoint.message}
                 </div>
               )}
@@ -143,7 +191,7 @@ export default function SettingsPage() {
                 {...register("access_key_id")}
               />
               {errors.access_key_id && (
-                <div className="mt-1 text-xs text-red-600">
+                <div className="mt-1 text-xs text-destructive">
                   {errors.access_key_id.message}
                 </div>
               )}
@@ -158,7 +206,7 @@ export default function SettingsPage() {
                 {...register("secret_access_key")}
               />
               {errors.secret_access_key && (
-                <div className="mt-1 text-xs text-red-600">
+                <div className="mt-1 text-xs text-destructive">
                   {errors.secret_access_key.message}
                 </div>
               )}
@@ -172,7 +220,7 @@ export default function SettingsPage() {
                 {...register("bucket")}
               />
               {errors.bucket && (
-                <div className="mt-1 text-xs text-red-600">
+                <div className="mt-1 text-xs text-destructive">
                   {errors.bucket.message}
                 </div>
               )}
@@ -186,7 +234,7 @@ export default function SettingsPage() {
                 {...register("region")}
               />
               {errors.region && (
-                <div className="mt-1 text-xs text-red-600">
+                <div className="mt-1 text-xs text-destructive">
                   {errors.region.message}
                 </div>
               )}
@@ -203,13 +251,51 @@ export default function SettingsPage() {
             >
               {saveMutation.isLoading ? "Saving…" : "Save Credentials"}
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => sanityMutation.mutate()}
-              disabled={sanityMutation.isLoading}
-            >
-              {sanityMutation.isLoading ? "Testing…" : "Test Connection"}
-            </Button>
+          <Button
+            variant="outline"
+            onClick={() => sanityMutation.mutate()}
+            disabled={sanityMutation.isLoading}
+          >
+            {sanityMutation.isLoading ? "Testing…" : "Test Connection"}
+          </Button>
+        </div>
+          <div className="mt-4 space-y-3 rounded  flex flex-col">
+            <div className="text-sm font-medium">Credential Transfer</div>
+            <div className="flex flex-col gap-4">
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Export payload
+                </div>
+                <Button onClick={handleExport} disabled={exportMutation.isLoading}>
+                  {exportMutation.isLoading ? "Generating…" : "Generate payload"}
+                </Button>
+              </div>
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Import payload
+                </div>
+                <Textarea
+                  className="text-foreground max-w-md resize-y rounded border px-2 py-2 text-sm"
+                  rows={6}
+                  placeholder="Paste the encrypted Base64 string here"
+                  value={importEncoded}
+                  onChange={(e) => setImportEncoded(e.target.value)}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={handleImport} disabled={importMutation.isLoading}>
+                    {importMutation.isLoading ? "Importing…" : "Import"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setImportEncoded("")}
+                    disabled={importMutation.isLoading}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
         </TabsContent>
         <TabsContent value="app">
@@ -284,9 +370,37 @@ export default function SettingsPage() {
         <div className="text-sm">Loading status…</div>
       )}
       {/* no longer show success msg */}
+      <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+        <DialogContent className="w-[min(90vw,32rem)]">
+          <DialogHeader>
+            <DialogTitle>Credential Payload</DialogTitle>
+            <DialogDescription>
+              <p className="text-xs text-destructive ">
+              Keep it safe! Anyone with this string can import your
+              credentials and get access to your R2 data!
+            </p>
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            className="text-foreground w-full resize-y rounded border px-2 py-2 text-sm"
+            rows={8}
+            readOnly
+            value={exportEncoded}
+          />
+          <DialogFooter className="flex flex-col items-stretch gap-2 sm:flex-row sm:justify-end sm:gap-3">
+            <Button type="button" variant="outline" onClick={handleCopy} disabled={!exportEncoded}>
+              Copy to Clipboard
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setExportDialogOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {msg && (
         <div
-          className={`text-sm ${msg.isError ? "text-red-600" : "text-green-700"}`}
+          className={`text-sm ${msg.isError ? "text-destructive" : "text-green-700"}`}
         >
           {msg.isError && msg.msg}
         </div>

@@ -1,9 +1,12 @@
 use crate::download::{DownloadStatus, NewDownloadParams};
 use crate::r2_client;
 use crate::share::{ShareLink, ShareParams};
-use crate::sp_backend::{BackendState as BackendStatus, CredentialBundle, SpBackend};
+use crate::sp_backend::{
+    BackendPackage, BackendState as BackendStatus, CredentialBundle, SpBackend,
+};
 use crate::types::*;
 use crate::upload::{NewUploadParams, NewUploadStreamParams, UploadStatus};
+use base64::Engine;
 #[cfg(target_os = "android")]
 use tauri_plugin_android_fs::{AndroidFsExt as _, FileUri};
 use tokio::io::AsyncWriteExt;
@@ -191,54 +194,6 @@ pub async fn android_copy_from_path_to_tree(
         Err(err_not_implemented("android_copy_from_path_to_tree"))
     }
 }
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct RedactedCredentials {
-    pub endpoint: String,
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub bucket: String,
-    pub region: Option<String>,
-}
-
-fn redact_endpoint(ep: &str) -> String {
-    // Protect the account segment (subdomain) while preserving provider host to disambiguate.
-    // https://<account>.r2.cloudflarestorage.com → https://*****.r2.cloudflarestorage.com
-    if let Some(rest) = ep.strip_prefix("https://") {
-        if let Some(idx) = rest.find('.') {
-            let host_tail = &rest[idx..];
-            return format!("https://{}{}", "*****", host_tail);
-        }
-    }
-    // Fallback: partial mask of any alnum run before first dot
-    let mut parts = ep.splitn(2, '.');
-    if let Some(first) = parts.next() {
-        let tail = parts.next().unwrap_or("");
-        let masked = if first.starts_with("http") {
-            first.to_string()
-        } else {
-            "*****".into()
-        };
-        if tail.is_empty() {
-            masked
-        } else {
-            format!("{}.{}", masked, tail)
-        }
-    } else {
-        "*****".into()
-    }
-}
-
-fn redact_key(s: &str) -> String {
-    let n = s.len();
-    if n <= 4 {
-        return "****".into();
-    }
-    let keep = 4usize;
-    let head = &s[..keep.min(n)];
-    format!("{}{}", head, "*".repeat(n.saturating_sub(keep)))
-}
-
 #[tauri::command]
 pub async fn backend_credentials_redacted() -> SpResult<RedactedCredentials> {
     crate::logger::debug("bridge", "backend_credentials_redacted");
@@ -252,7 +207,333 @@ pub async fn backend_credentials_redacted() -> SpResult<RedactedCredentials> {
     })
 }
 
+#[derive(serde::Serialize)]
+pub struct CredentialExportPayload {
+    pub encoded: String,
+}
+
+#[tauri::command]
+pub async fn backend_export_credentials_package() -> SpResult<CredentialExportPayload> {
+    crate::logger::info("bridge", "backend_export_credentials_package");
+    let pkg = SpBackend::export_package()?;
+    let json = serde_json::to_vec(&pkg).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("serialize export package: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(json);
+    Ok(CredentialExportPayload { encoded })
+}
+
+#[tauri::command]
+pub async fn backend_import_credentials_package(encoded: String) -> SpResult<()> {
+    crate::logger::info("bridge", "backend_import_credentials_package");
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(encoded.trim().as_bytes())
+        .map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("decode package payload: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+    let pkg: BackendPackage = serde_json::from_slice(&bytes).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("parse package payload: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    SpBackend::import_package(pkg)
+}
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AndroidFsCopyParams {
+    pub direction: String, // "sandbox_to_tree", "tree_to_sandbox", "uri_to_sandbox"
+    pub local_path: String,
+    pub tree_uri: Option<String>,
+    pub relative_path: Option<String>,
+    pub mime: Option<String>,
+    pub uri: Option<String>,
+}
+
+#[tauri::command]
+pub async fn android_fs_copy(app: tauri::AppHandle, params: AndroidFsCopyParams) -> SpResult<()> {
+    #[cfg(target_os = "android")]
+    {
+        use std::io::{BufReader, Read, Write};
+
+        let api = app.android_fs();
+        match params.direction.as_str() {
+            "sandbox_to_tree" => {
+                let tree_uri = params
+                    .tree_uri
+                    .ok_or_else(|| err_invalid("tree_uri required"))?;
+                let rel = params
+                    .relative_path
+                    .ok_or_else(|| err_invalid("relative_path required"))?;
+                let base = FileUri::from_str(&tree_uri).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("tree uri parse: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                if let Some(parent) = std::path::Path::new(&rel).parent() {
+                    let parent_rel = parent.to_string_lossy();
+                    api.create_dir_all(&base, parent_rel.as_ref()).map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("create_dir_all: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                }
+                let file_uri = api
+                    .create_file(&base, &rel, params.mime.as_deref())
+                    .map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("create_file: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                let mut ws = api.open_writable_stream(&file_uri).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("open_writable_stream: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                let f = std::fs::File::open(&params.local_path).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("open src {}: {e}", &params.local_path),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                let mut br = BufReader::new(f);
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    let n = br.read(&mut buf).map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("read: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                    if n == 0 {
+                        break;
+                    }
+                    ws.write_all(&buf[..n]).map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("write: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                }
+                drop(ws);
+                return Ok(());
+            }
+            "tree_to_sandbox" => {
+                let tree_uri = params
+                    .tree_uri
+                    .ok_or_else(|| err_invalid("tree_uri required"))?;
+                let rel = params
+                    .relative_path
+                    .ok_or_else(|| err_invalid("relative_path required"))?;
+                let base = FileUri::from_str(&tree_uri).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("tree uri parse: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                let file_uri = api
+                    .open_file(&base, &rel)
+                    .map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("open_file: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                let mut rs = api.open_readable_stream(&file_uri).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("open_readable_stream: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                if let Some(parent) = std::path::Path::new(&params.local_path).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent).map_err(|e| SpError {
+                            kind: ErrorKind::NotRetriable,
+                            message: format!("create_dir_all: {e}"),
+                            retry_after_ms: None,
+                            context: None,
+                            at: chrono::Utc::now().timestamp_millis(),
+                        })?;
+                    }
+                }
+                let mut file = std::fs::File::create(&params.local_path).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("create dest {}: {e}", &params.local_path),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    let n = rs.read(&mut buf).map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("read: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                    if n == 0 {
+                        break;
+                    }
+                    file.write_all(&buf[..n]).map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("write: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                }
+                file.flush().map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("flush: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                return Ok(());
+            }
+            "uri_to_sandbox" => {
+                let uri = params
+                    .uri
+                    .ok_or_else(|| err_invalid("uri required"))?;
+                let file_uri = FileUri::from_str(&uri).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("uri parse: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                let mut rs = api.open_readable_stream(&file_uri).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("open_readable_stream: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                if let Some(parent) = std::path::Path::new(&params.local_path).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent).map_err(|e| SpError {
+                            kind: ErrorKind::NotRetriable,
+                            message: format!("create_dir_all: {e}"),
+                            retry_after_ms: None,
+                            context: None,
+                            at: chrono::Utc::now().timestamp_millis(),
+                        })?;
+                    }
+                }
+                let mut file = std::fs::File::create(&params.local_path).map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("create dest {}: {e}", &params.local_path),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                let mut buf = [0u8; 64 * 1024];
+                loop {
+                    let n = rs.read(&mut buf).map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("read: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                    if n == 0 {
+                        break;
+                    }
+                    file.write_all(&buf[..n]).map_err(|e| SpError {
+                        kind: ErrorKind::NotRetriable,
+                        message: format!("write: {e}"),
+                        retry_after_ms: None,
+                        context: None,
+                        at: chrono::Utc::now().timestamp_millis(),
+                    })?;
+                }
+                file.flush().map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("flush: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: chrono::Utc::now().timestamp_millis(),
+                })?;
+                return Ok(());
+            }
+            _ => Err(err_invalid("unsupported direction")),
+        }
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = app;
+        let _ = params;
+        Err(err_not_implemented("android_fs_copy"))
+    }
+}
+
+
 // Save encrypted credentials (replaces vault_set_manual)
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RedactedCredentials {
+    pub endpoint: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub bucket: String,
+    pub region: Option<String>,
+}
+
+fn redact_endpoint(ep: &str) -> String {
+    if let Some(rest) = ep.strip_prefix("https://") {
+        if let Some(idx) = rest.find('.') {
+            let host_tail = &rest[idx..];
+            return format!("https://{}{}", "*****", host_tail);
+        }
+    }
+    let mut parts = ep.splitn(2, '.');
+    if let Some(first) = parts.next() {
+        let tail = parts.next().unwrap_or("");
+        let masked = if first.starts_with("http") {
+            format!("{}***", &first[..first.len().min(4)])
+        } else {
+            "*****".into()
+        };
+        if tail.is_empty() {
+            return masked;
+        }
+        return format!("{}.{}", masked, tail);
+    }
+    "*****".into()
+}
+
+fn redact_key(s: &str) -> String {
+    let n = s.len();
+    if n <= 4 {
+        return "****".into();
+    }
+    let keep = 4usize;
+    let head = &s[..keep.min(n)];
+    format!("{}{}", head, "*".repeat(n.saturating_sub(keep)))
+}
+
 #[tauri::command]
 pub async fn backend_set_credentials(bundle: CredentialBundle) -> SpResult<()> {
     crate::logger::info("bridge", "backend_set_credentials called");
