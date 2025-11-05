@@ -10,10 +10,16 @@ import {
   onLogEvent,
   onUploadEvent,
 } from "@/lib/api/tauriBridge";
+import { formatBytes } from "@/lib/utils";
 import { useAppStore } from "@/store/app-store";
 import { useLogStore } from "@/store/log-store";
 import { useTransferStore } from "@/store/transfer-store";
 import { open, remove } from "@tauri-apps/plugin-fs";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { useEffect } from "react";
 import { toast } from "sonner";
 
@@ -59,6 +65,213 @@ function unregisterActive(id: string) {
   }
 }
 
+const isAndroidDevice =
+  typeof navigator !== "undefined" &&
+  /Android/i.test(String(navigator.userAgent || ""));
+const isTauriApp =
+  typeof window !== "undefined" &&
+  Boolean(
+    (window as unknown as { __TAURI_IPC__?: unknown }).__TAURI_IPC__ ??
+      (window as unknown as { __TAURI_INTERNALS__?: unknown })
+        .__TAURI_INTERNALS__,
+  );
+
+type NotificationPermissionState = "unknown" | "granted" | "denied";
+
+let notificationPermissionState: NotificationPermissionState = "unknown";
+let notificationInitPromise: Promise<boolean> | null = null;
+
+function notificationKeyToId(key: string): number {
+  // Basic 32-bit FNV-1a hash to turn stable string keys into signed ints.
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i += 1) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const unsigned = hash >>> 0;
+  return unsigned > 0x7fffffff ? unsigned - 0x100000000 : unsigned;
+}
+
+const TRANSFER_NOTIFICATION_PREFIX = "swiftpan.transfer.";
+const PROGRESS_NOTIFICATION_KEY = "swiftpan.transfer.progress";
+const PROGRESS_NOTIFICATION_ID = notificationKeyToId(PROGRESS_NOTIFICATION_KEY);
+
+type AggregateSnapshot = {
+  active: number;
+  percent: number;
+  doneBytes: number;
+  totalBytes: number;
+  hasUnknown: boolean;
+};
+
+let lastProgressSnapshot: AggregateSnapshot | null = null;
+let progressUpdateTimer: number | undefined;
+
+function hasNotificationSupport() {
+  return isAndroidDevice && isTauriApp;
+}
+
+async function ensureNotificationReady(): Promise<boolean> {
+  if (!hasNotificationSupport()) return false;
+  if (notificationPermissionState === "granted") return true;
+  if (notificationPermissionState === "denied") return false;
+  if (!notificationInitPromise) {
+    notificationInitPromise = (async () => {
+      try {
+        if (await isPermissionGranted()) {
+          notificationPermissionState = "granted";
+          return true;
+        }
+        const permission = await requestPermission();
+        if (permission === "granted") {
+          notificationPermissionState = "granted";
+          return true;
+        }
+        notificationPermissionState = "denied";
+        return false;
+      } catch (err) {
+        console.warn("notification permission lookup failed", err);
+        notificationPermissionState = "denied";
+        return false;
+      }
+    })();
+  }
+  if (!notificationInitPromise) return false;
+  const ok = await notificationInitPromise;
+  notificationPermissionState = ok ? "granted" : "denied";
+  if (!ok && notificationPermissionState !== "granted") {
+    notificationInitPromise = null;
+  }
+  return ok;
+}
+
+function computeAggregateSnapshot(): AggregateSnapshot | null {
+  const items = Object.values(useTransferStore.getState().items);
+  const running = items.filter((item) => item.state === "running");
+  if (running.length === 0) return null;
+
+  let totalBytes = 0;
+  let doneBytes = 0;
+  let unknown = 0;
+
+  for (const item of running) {
+    const total = item.bytesTotal ?? 0;
+    if (total > 0) {
+      totalBytes += total;
+      const done = Math.min(item.bytesDone, total);
+      if (Number.isFinite(done)) {
+        doneBytes += done;
+      }
+    } else {
+      unknown += 1;
+    }
+  }
+
+  let percent = 0;
+  if (totalBytes > 0) {
+    percent = Math.floor((doneBytes / totalBytes) * 100);
+  }
+  percent = Math.max(0, Math.min(100, percent));
+
+  return {
+    active: running.length,
+    percent,
+    doneBytes,
+    totalBytes,
+    hasUnknown: unknown > 0,
+  };
+}
+
+async function emitAggregateProgress(force = false): Promise<void> {
+  if (!hasNotificationSupport()) return;
+  if (!(await ensureNotificationReady())) return;
+
+  const summary = computeAggregateSnapshot();
+  if (!summary) {
+    if (!lastProgressSnapshot) return;
+    lastProgressSnapshot = null;
+    try {
+      await sendNotification({
+        id: PROGRESS_NOTIFICATION_ID,
+        title: "Transfers complete",
+        body: "All transfers have finished.",
+      });
+    } catch (err) {
+      console.warn("aggregate progress completion notification failed", err);
+    }
+    return;
+  }
+
+  if (
+    !force &&
+    lastProgressSnapshot &&
+    lastProgressSnapshot.active === summary.active &&
+    lastProgressSnapshot.percent === summary.percent &&
+    lastProgressSnapshot.totalBytes === summary.totalBytes &&
+    lastProgressSnapshot.doneBytes === summary.doneBytes &&
+    lastProgressSnapshot.hasUnknown === summary.hasUnknown
+  ) {
+    return;
+  }
+
+  lastProgressSnapshot = summary;
+
+  const pieces = [`Active: ${summary.active}`, `Progress: ${summary.percent}%`];
+  if (summary.totalBytes > 0) {
+    pieces.push(
+      `Transferred ${formatBytes(summary.doneBytes)} / ${formatBytes(summary.totalBytes)}`,
+    );
+  } else if (summary.hasUnknown) {
+    pieces.push("Waiting for total size");
+  }
+
+  try {
+    await sendNotification({
+      id: PROGRESS_NOTIFICATION_ID,
+      title: "Transfers running",
+      body: pieces.join(" · "),
+    });
+  } catch (err) {
+    console.warn("aggregate progress notification failed", err);
+  }
+}
+
+function triggerAggregateUpdate(force = false) {
+  if (!hasNotificationSupport()) return;
+  if (force) {
+    void emitAggregateProgress(true);
+    return;
+  }
+  if (typeof window === "undefined") return;
+  if (progressUpdateTimer !== undefined) return;
+  progressUpdateTimer = window.setTimeout(() => {
+    progressUpdateTimer = undefined;
+    void emitAggregateProgress(false);
+  }, 900);
+}
+
+async function notifyTransferEvent(
+  kind: TransferKind,
+  id: string,
+  title: string,
+  body?: string,
+): Promise<void> {
+  if (!hasNotificationSupport()) return;
+  if (!(await ensureNotificationReady())) return;
+  const content =
+    body && body.trim().length > 0 ? body : `${kind} ${String(id)}`;
+  const numericId = notificationKeyToId(`${TRANSFER_NOTIFICATION_PREFIX}${id}`);
+  try {
+    await sendNotification({
+      id: numericId,
+      title,
+      body: content,
+    });
+  } catch (err) {
+    console.warn(`send notification failed for ${kind}`, err);
+  }
+}
+
 async function refreshUploadStatus(id: string) {
   const status = await nv
     .upload_status(id)
@@ -68,6 +281,7 @@ async function refreshUploadStatus(id: string) {
       .getState()
       .update(id, { state: "failed", error: "status not found" });
     unregisterActive(id);
+    triggerAggregateUpdate(true);
     return;
   }
   const store = useTransferStore.getState();
@@ -80,6 +294,7 @@ async function refreshUploadStatus(id: string) {
     bytesDone: status.bytes_done,
     rateBps: status.rate_bps ?? 0,
   });
+  triggerAggregateUpdate();
 }
 
 async function refreshDownloadStatus(id: string) {
@@ -92,6 +307,7 @@ async function refreshDownloadStatus(id: string) {
       .getState()
       .update(id, { state: "failed", error: "status not found" });
     unregisterActive(id);
+    triggerAggregateUpdate(true);
     return;
   }
   const store = useTransferStore.getState();
@@ -103,6 +319,7 @@ async function refreshDownloadStatus(id: string) {
     bytesDone: status.bytes_done,
     rateBps: status.rate_bps ?? 0,
   });
+  triggerAggregateUpdate();
 }
 
 function handleUploadEvent(ev: UploadEvent) {
@@ -131,16 +348,20 @@ function handleUploadEvent(ev: UploadEvent) {
       {
         const k = keyOrName();
         toast.info(k ? `Upload started: ${k}` : "Upload started");
+        void notifyTransferEvent("upload", id, "Upload started", k ?? id);
       }
+      triggerAggregateUpdate(true);
       break;
     }
     case "Resumed": {
       s.update(id, { state: "running" });
       setTimeout(() => void refreshUploadStatus(id), 0);
+      triggerAggregateUpdate(true);
       break;
     }
     case "Paused": {
       s.update(id, { state: "paused" });
+      triggerAggregateUpdate(true);
       break;
     }
     case "PartDone": {
@@ -156,7 +377,9 @@ function handleUploadEvent(ev: UploadEvent) {
       {
         const k = keyOrName();
         toast.success(k ? `Upload completed: ${k}` : "Upload completed");
+        void notifyTransferEvent("upload", id, "Upload completed", k ?? id);
       }
+      triggerAggregateUpdate(true);
       break;
     }
     case "Failed": {
@@ -167,7 +390,16 @@ function handleUploadEvent(ev: UploadEvent) {
         const k = keyOrName();
         const msg = ev.error?.message ? `: ${ev.error.message}` : "";
         toast.error(k ? `Upload failed (${k})${msg}` : `Upload failed${msg}`);
+        const detail = k ?? id;
+        const notifMsg = ev.error?.message ? ` · ${ev.error.message}` : "";
+        void notifyTransferEvent(
+          "upload",
+          id,
+          "Upload failed",
+          `${detail}${notifMsg}`,
+        );
       }
+      triggerAggregateUpdate(true);
       break;
     }
   }
@@ -201,20 +433,25 @@ async function handleDownloadEvent(ev: DownloadEvent) {
       {
         const k = keyOrName();
         toast.info(k ? `Download started: ${k}` : "Download started");
+        void notifyTransferEvent("download", id, "Download started", k ?? id);
       }
+      triggerAggregateUpdate(true);
       break;
     }
     case "Resumed": {
       s.update(id, { state: "running" });
       setTimeout(() => void refreshDownloadStatus(id), 0);
+      triggerAggregateUpdate(true);
       break;
     }
     case "Paused": {
       s.update(id, { state: "paused" });
+      triggerAggregateUpdate(true);
       break;
     }
     case "ChunkDone": {
       setTimeout(() => void refreshDownloadStatus(id), 0);
+      triggerAggregateUpdate();
       break;
     }
     case "Completed": {
@@ -270,6 +507,11 @@ async function handleDownloadEvent(ev: DownloadEvent) {
         const k = keyOrName();
         toast.success(k ? `Download completed: ${k}` : "Download completed");
       }
+      {
+        const k = keyOrName();
+        void notifyTransferEvent("download", id, "Download completed", k ?? id);
+      }
+      triggerAggregateUpdate(true);
       break;
     }
     case "Failed": {
@@ -282,12 +524,31 @@ async function handleDownloadEvent(ev: DownloadEvent) {
         toast.error(
           k ? `Download failed (${k})${msg}` : `Download failed${msg}`,
         );
+        const detail = k ?? id;
+        const notifMsg = ev.error?.message ? ` · ${ev.error.message}` : "";
+        void notifyTransferEvent(
+          "download",
+          id,
+          "Download failed",
+          `${detail}${notifMsg}`,
+        );
       }
+      triggerAggregateUpdate(true);
       break;
     }
     case "SourceChanged": {
       s.update(id, { state: "failed", error: "SourceChanged" });
       unregisterActive(id);
+      {
+        const k = keyOrName();
+        void notifyTransferEvent(
+          "download",
+          id,
+          "Download failed",
+          `${k ?? id} · source changed`,
+        );
+      }
+      triggerAggregateUpdate(true);
       break;
     }
   }
@@ -383,6 +644,7 @@ async function ensureBridgeOnce() {
         setTimeout(() => void refreshDownloadStatus(id), 0);
       }
     }
+    triggerAggregateUpdate(true);
   }
 
   // Seed logger status and initial tail once

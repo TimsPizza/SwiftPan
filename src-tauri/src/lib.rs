@@ -7,6 +7,7 @@ pub fn run() {
         .plugin(tauri_plugin_android_fs::init())
         // Persisted scope for Android SAF permissions
         .plugin(tauri_plugin_persisted_scope::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             crate::settings::settings_get,
             crate::settings::settings_set,

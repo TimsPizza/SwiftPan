@@ -1,0 +1,27 @@
+[
+  {
+    "path": ".DS_Store",
+    "size": 6148,
+    "hash": "d65165279105ca6773180500688df4bdc69a2c7b771752f0a46ef120b7fd8ec3"
+  },
+  {
+    "path": "assets/index-A0sV08CA.js",
+    "size": 1165919,
+    "hash": "9a88b916d6275278327553ba39092702fa9736141fa88bea713a1120a080d11b"
+  },
+  {
+    "path": "assets/index-CExjkoVL.css",
+    "size": 114859,
+    "hash": "541700ee542e26d9cdf67d7e8b5cc6b6d73fac2c45eda007f69636400bcd7b13"
+  },
+  {
+    "path": "brand.png",
+    "size": 61454,
+    "hash": "43d32293d8246c5d58341a77c0cfed18d8294614b37541e6b06eb6b4502006eb"
+  },
+  {
+    "path": "index.html",
+    "size": 2214,
+    "hash": "5c12b63b451ac10053447130b80a08ffc31ef029712d719922f1764810da6469"
+  }
+]

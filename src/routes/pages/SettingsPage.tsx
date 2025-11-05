@@ -164,8 +164,47 @@ export default function SettingsPage() {
           <TabsTrigger value="creds">R2 Credentials</TabsTrigger>
           <TabsTrigger value="app">App Settings</TabsTrigger>
         </TabsList>
-        <TabsContent value="creds" className="flex flex-col gap-2">
-          <form onSubmit={save} className="grid max-w-xl grid-cols-2 gap-2">
+        <TabsContent value="creds" className="flex flex-col gap-4">
+         <div className="mt-4 space-y-3 rounded  flex flex-col">
+            <div className="text-sm font-medium">Credential Transfer</div>
+            <div className="flex flex-col gap-4">
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Export payload
+                </div>
+                <Button onClick={handleExport} disabled={exportMutation.isLoading}>
+                  {exportMutation.isLoading ? "Generating…" : "Generate payload"}
+                </Button>
+              </div>
+              <div className="space-y-2">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Import payload
+                </div>
+                <Textarea
+                  className="text-foreground max-w-md resize-y rounded border px-2 py-2 text-sm"
+                  rows={6}
+                  placeholder="Paste the encrypted Base64 string here"
+                  value={importEncoded}
+                  onChange={(e) => setImportEncoded(e.target.value)}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={handleImport} disabled={importMutation.isLoading}>
+                    {importMutation.isLoading ? "Importing…" : "Import"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setImportEncoded("")}
+                    disabled={importMutation.isLoading}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="text-sm font-medium">Credential Editor</div>
+           <form onSubmit={save} className="grid max-w-xl grid-cols-2 gap-2">
             <label className="text-sm">Endpoint</label>
             <div>
               <input
@@ -259,44 +298,7 @@ export default function SettingsPage() {
             {sanityMutation.isLoading ? "Testing…" : "Test Connection"}
           </Button>
         </div>
-          <div className="mt-4 space-y-3 rounded  flex flex-col">
-            <div className="text-sm font-medium">Credential Transfer</div>
-            <div className="flex flex-col gap-4">
-              <div className="space-y-2">
-                <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Export payload
-                </div>
-                <Button onClick={handleExport} disabled={exportMutation.isLoading}>
-                  {exportMutation.isLoading ? "Generating…" : "Generate payload"}
-                </Button>
-              </div>
-              <div className="space-y-2">
-                <div className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Import payload
-                </div>
-                <Textarea
-                  className="text-foreground max-w-md resize-y rounded border px-2 py-2 text-sm"
-                  rows={6}
-                  placeholder="Paste the encrypted Base64 string here"
-                  value={importEncoded}
-                  onChange={(e) => setImportEncoded(e.target.value)}
-                />
-                <div className="flex flex-wrap gap-2">
-                  <Button onClick={handleImport} disabled={importMutation.isLoading}>
-                    {importMutation.isLoading ? "Importing…" : "Import"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => setImportEncoded("")}
-                    disabled={importMutation.isLoading}
-                  >
-                    Clear
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
+          
         </TabsContent>
         <TabsContent value="app">
           <div className="mt-4 grid max-w-xl grid-cols-2 gap-2">

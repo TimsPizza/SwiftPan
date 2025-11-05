@@ -2,16 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "enables the default permissions",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "dialog:default",
-    "fs:default",
-    "fs:allow-copy-file",
-    "fs:allow-remove",
-    "fs:allow-appdata-read-recursive",
-    "fs:allow-appdata-write-recursive",
-    "fs:allow-appcache-read-recursive",
-    "fs:allow-appcache-write-recursive"
+    "notification:default",
+    "fs:default"
   ]
 }

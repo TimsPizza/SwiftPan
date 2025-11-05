@@ -24,7 +24,9 @@ val keystoreProperties =
         }
 
 android {
-  namespace = "com.timspizza.swiftpan"
+  namespace = "com.timspizza.swiftp;
+        loggerService.logger.debug(
+an"
   compileSdk = 36
 
   defaultConfig {
