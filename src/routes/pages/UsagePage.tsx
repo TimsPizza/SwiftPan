@@ -286,7 +286,7 @@ export default function UsagePage() {
                   <TableCell className="hidden lg:table-cell" />
                   <TableCell className="hidden lg:table-cell" />
                   <TableCell className="hidden lg:table-cell" />
-                  <TableCell className="text-right font-medium">
+                  <TableCell className="text-center font-medium">
                     {items
                       .reduce(
                         (acc: number, d: any) =>
@@ -299,7 +299,7 @@ export default function UsagePage() {
                       )
                       .toLocaleString()}
                   </TableCell>
-                  <TableCell className="text-center font-medium">
+                  <TableCell className="font-medium text-center">
                     {items
                       .reduce(
                         (acc: number, d: any) =>
