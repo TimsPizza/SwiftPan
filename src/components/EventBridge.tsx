@@ -1,11 +1,6 @@
-import type {
-  DownloadEvent,
-  DownloadStatus,
-  UploadEvent,
-  UploadStatus,
-} from "@/lib/api/bridge";
+import type { DownloadEvent, UploadEvent } from "@/lib/api/bridge";
 import {
-  nv,
+  api,
   onDownloadEvent,
   onLogEvent,
   onUploadEvent,
@@ -16,10 +11,15 @@ import { useLogStore } from "@/store/log-store";
 import { useTransferStore } from "@/store/transfer-store";
 import { open, remove } from "@tauri-apps/plugin-fs";
 import {
+  createChannel,
+  Importance,
   isPermissionGranted,
+  onAction,
   requestPermission,
   sendNotification,
+  Visibility,
 } from "@tauri-apps/plugin-notification";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect } from "react";
 import { toast } from "sonner";
 
@@ -95,6 +95,9 @@ function notificationKeyToId(key: string): number {
 const TRANSFER_NOTIFICATION_PREFIX = "swiftpan.transfer.";
 const PROGRESS_NOTIFICATION_KEY = "swiftpan.transfer.progress";
 const PROGRESS_NOTIFICATION_ID = notificationKeyToId(PROGRESS_NOTIFICATION_KEY);
+const PROGRESS_NOTIFICATION_CHANNEL_ID = "swiftpan.progress";
+const DOWNLOAD_COMPLETE_EXTRA_KIND = "download_complete";
+const DEFAULT_NOTIFICATION_ACTION = "tap";
 
 type AggregateSnapshot = {
   active: number;
@@ -106,9 +109,28 @@ type AggregateSnapshot = {
 
 let lastProgressSnapshot: AggregateSnapshot | null = null;
 let progressUpdateTimer: number | undefined;
+let progressChannelPrepared = false;
 
 function hasNotificationSupport() {
   return isAndroidDevice && isTauriApp;
+}
+
+async function ensureProgressChannel() {
+  if (!hasNotificationSupport() || progressChannelPrepared) return;
+  progressChannelPrepared = true;
+  try {
+    await createChannel({
+      id: PROGRESS_NOTIFICATION_CHANNEL_ID,
+      name: "Transfer progress",
+      description: "SwiftPan transfer updates",
+      vibration: false,
+      lights: false,
+      importance: Importance.Low,
+      visibility: Visibility.Private,
+    });
+  } catch (err) {
+    console.warn("progress notification channel setup failed", err);
+  }
 }
 
 async function ensureNotificationReady(): Promise<boolean> {
@@ -215,6 +237,7 @@ async function emitAggregateProgress(force = false): Promise<void> {
   }
 
   lastProgressSnapshot = summary;
+  await ensureProgressChannel();
 
   const pieces = [`Active: ${summary.active}`, `Progress: ${summary.percent}%`];
   if (summary.totalBytes > 0) {
@@ -230,6 +253,9 @@ async function emitAggregateProgress(force = false): Promise<void> {
       id: PROGRESS_NOTIFICATION_ID,
       title: "Transfers running",
       body: pieces.join(" · "),
+      channelId: PROGRESS_NOTIFICATION_CHANNEL_ID,
+      ongoing: true,
+      autoCancel: false,
     });
   } catch (err) {
     console.warn("aggregate progress notification failed", err);
@@ -250,11 +276,17 @@ function triggerAggregateUpdate(force = false) {
   }, 900);
 }
 
+type TransferNotificationExtras = {
+  extra?: Record<string, unknown>;
+  actionTypeId?: string;
+};
+
 async function notifyTransferEvent(
   kind: TransferKind,
   id: string,
   title: string,
   body?: string,
+  options?: TransferNotificationExtras,
 ): Promise<void> {
   if (!hasNotificationSupport()) return;
   if (!(await ensureNotificationReady())) return;
@@ -266,60 +298,137 @@ async function notifyTransferEvent(
       id: numericId,
       title,
       body: content,
+      actionTypeId: options?.actionTypeId,
+      extra: options?.extra,
     });
   } catch (err) {
     console.warn(`send notification failed for ${kind}`, err);
   }
 }
 
+function extractNotificationExtra(what: any): Record<string, unknown> | undefined {
+  if (!what || typeof what !== "object") return undefined;
+  const raw = (what.extra ?? what.data) as unknown;
+  if (!raw) return undefined;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof raw === "object") {
+    return raw as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+async function openAndroidDownloadDirectoryFromNotification() {
+  if (!isAndroidDevice) return;
+  try {
+    const store = useAppStore.getState();
+    const setter = store.setAndroidTreeUri;
+    let treeUri = store.androidTreeUri;
+    if (!treeUri) {
+      try {
+        const persisted = await api.android_get_persisted_download_dir();
+        if (persisted) {
+          treeUri = persisted;
+          setter?.(persisted);
+        }
+      } catch (err) {
+        console.warn("failed to resolve persisted android download dir", err);
+      }
+    }
+    if (!treeUri) {
+      toast.error("Download directory not available");
+      return;
+    }
+    await openUrl(treeUri);
+  } catch (err) {
+    console.warn("open download directory via notification failed", err);
+    toast.error("Failed to open download directory");
+  }
+}
+
+async function handleNotificationActionEvent(payload: any) {
+  if (!payload || typeof payload !== "object") return;
+  const actionId = typeof payload.actionId === "string" ? payload.actionId : undefined;
+  if (actionId !== DEFAULT_NOTIFICATION_ACTION) return;
+  const notification = payload.notification;
+  const extra = extractNotificationExtra(notification);
+  const spKind =
+    typeof extra?.spKind === "string"
+      ? extra.spKind
+      : typeof extra?.sp_kind === "string"
+        ? extra.sp_kind
+        : undefined;
+  if (spKind === DOWNLOAD_COMPLETE_EXTRA_KIND) {
+    await openAndroidDownloadDirectoryFromNotification();
+  }
+}
+
 async function refreshUploadStatus(id: string) {
-  const status = await nv
-    .upload_status(id)
-    .unwrapOr(null as unknown as UploadStatus | null);
-  if (!status) {
-    useTransferStore
-      .getState()
-      .update(id, { state: "failed", error: "status not found" });
+  try {
+    const status = await api.upload_status(id);
+    if (!status) {
+      useTransferStore
+        .getState()
+        .update(id, { state: "failed", error: "status not found" });
+      unregisterActive(id);
+      triggerAggregateUpdate(true);
+      return;
+    }
+    const store = useTransferStore.getState();
+    // Ensure basic item exists
+    store.update(id, {
+      id,
+      type: "upload",
+      key: status.key,
+      bytesTotal: status.bytes_total,
+      bytesDone: status.bytes_done,
+      rateBps: status.rate_bps ?? 0,
+    });
+    triggerAggregateUpdate();
+  } catch (err: any) {
+    useTransferStore.getState().update(id, {
+      state: "failed",
+      error: String(err?.message ?? err ?? "status not found"),
+    });
     unregisterActive(id);
     triggerAggregateUpdate(true);
-    return;
   }
-  const store = useTransferStore.getState();
-  // Ensure basic item exists
-  store.update(id, {
-    id,
-    type: "upload",
-    key: status.key,
-    bytesTotal: status.bytes_total,
-    bytesDone: status.bytes_done,
-    rateBps: status.rate_bps ?? 0,
-  });
-  triggerAggregateUpdate();
 }
 
 async function refreshDownloadStatus(id: string) {
-  const status = await nv
-    .download_status(id)
-    .unwrapOr(null as unknown as DownloadStatus | null);
-
-  if (!status) {
-    useTransferStore
-      .getState()
-      .update(id, { state: "failed", error: "status not found" });
+  try {
+    const status = await api.download_status(id);
+    if (!status) {
+      useTransferStore
+        .getState()
+        .update(id, { state: "failed", error: "status not found" });
+      unregisterActive(id);
+      triggerAggregateUpdate(true);
+      return;
+    }
+    const store = useTransferStore.getState();
+    store.update(id, {
+      id,
+      type: "download",
+      key: status.key,
+      bytesTotal: status.bytes_total,
+      bytesDone: status.bytes_done,
+      rateBps: status.rate_bps ?? 0,
+    });
+    triggerAggregateUpdate();
+  } catch (err: any) {
+    useTransferStore.getState().update(id, {
+      state: "failed",
+      error: String(err?.message ?? err ?? "status not found"),
+    });
     unregisterActive(id);
     triggerAggregateUpdate(true);
-    return;
   }
-  const store = useTransferStore.getState();
-  store.update(id, {
-    id,
-    type: "download",
-    key: status.key,
-    bytesTotal: status.bytes_total,
-    bytesDone: status.bytes_done,
-    rateBps: status.rate_bps ?? 0,
-  });
-  triggerAggregateUpdate();
 }
 
 function handleUploadEvent(ev: UploadEvent) {
@@ -509,7 +618,18 @@ async function handleDownloadEvent(ev: DownloadEvent) {
       }
       {
         const k = keyOrName();
-        void notifyTransferEvent("download", id, "Download completed", k ?? id);
+        void notifyTransferEvent(
+          "download",
+          id,
+          "Download completed",
+          k ?? id,
+          {
+            extra: {
+              spKind: DOWNLOAD_COMPLETE_EXTRA_KIND,
+              key: k ?? id,
+            },
+          },
+        );
       }
       triggerAggregateUpdate(true);
       break;
@@ -561,6 +681,7 @@ async function ensureBridgeOnce() {
       initialized: boolean;
       unlistenUpload?: () => void;
       unlistenDownload?: () => void;
+      unlistenNotificationAction?: () => void;
       poller?: number;
     };
   };
@@ -569,6 +690,7 @@ async function ensureBridgeOnce() {
     initialized: true,
     unlistenUpload: undefined,
     unlistenDownload: undefined,
+    unlistenNotificationAction: undefined,
     poller: undefined,
   };
   w.__SP_EVENT_BRIDGE__ = ctrl;
@@ -617,6 +739,19 @@ async function ensureBridgeOnce() {
     // ignore
   }
 
+  if (hasNotificationSupport()) {
+    try {
+      const actionListener = await onAction((payload) => {
+        void handleNotificationActionEvent(payload);
+      });
+      ctrl.unlistenNotificationAction = () => {
+        void actionListener.unregister();
+      };
+    } catch (err) {
+      console.warn("notification action listener setup failed", err);
+    }
+  }
+
   // Recover from persisted registry on startup
   const reg = loadRegistry();
   const entries = Object.entries(reg);
@@ -649,15 +784,15 @@ async function ensureBridgeOnce() {
 
   // Seed logger status and initial tail once
   try {
-    const st = await nv.log_get_status().unwrapOr(undefined as any);
+    const st = await api.log_get_status();
     if (st) useLogStore.getState().setStatus(st as any);
-    const tail = await nv.log_tail(400).unwrapOr("");
+    const tail = await api.log_tail(400);
     if (tail) useLogStore.getState().setAll(String(tail).split("\n"));
   } catch {}
 
   // Load app settings to seed store
   try {
-    const s = await nv.settings_get().unwrapOr(undefined as any);
+    const s = await api.settings_get();
     if (s && typeof s === "object") {
       useAppStore.getState().setSettings({
         logLevel: String((s as any).logLevel ?? "info"),

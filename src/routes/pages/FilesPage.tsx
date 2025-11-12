@@ -1,5 +1,6 @@
 import GlobalError from "@/components/fallback/GlobalError";
 import { FileList } from "@/components/features/FileList";
+import { Button } from "@/components/ui/Button";
 import { FileItem } from "@/lib/api/schemas";
 import { queries } from "@/lib/api/tauriBridge";
 import { useEffect, useState } from "react";
@@ -96,8 +97,15 @@ export default function FilesPage() {
   }
   if (!files.length)
     return (
-      <div>
+      <div className="flex w-full items-center justify-between">
         <div className="p-4 text-sm">No files</div>
+        <Button
+          variant={"default"}
+          disabled={isLoading}
+          onClick={() => refetch()}
+        >
+          Refresh
+        </Button>
       </div>
     );
   return (

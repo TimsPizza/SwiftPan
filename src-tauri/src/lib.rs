@@ -1,6 +1,7 @@
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         // Android-specific FS via SAF (no-op on other platforms)
@@ -8,6 +9,7 @@ pub fn run() {
         // Persisted scope for Android SAF permissions
         .plugin(tauri_plugin_persisted_scope::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             crate::settings::settings_get,
             crate::settings::settings_set,
@@ -50,7 +52,6 @@ pub fn run() {
             // Android SAF helpers
             crate::bridge::android_pick_download_dir,
             crate::bridge::android_get_persisted_download_dir,
-            crate::bridge::android_copy_from_path_to_tree,
             crate::bridge::android_fs_copy,
             crate::bridge::android_pick_upload_files,
             crate::bridge::android_upload_from_uri,

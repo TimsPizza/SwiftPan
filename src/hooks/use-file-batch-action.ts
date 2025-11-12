@@ -1,5 +1,5 @@
 import type { FileItem as File } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
+import { api } from "@/lib/api/tauriBridge";
 // import { useAppStore } from "@/store/app-store";
 // import { useTransferStore } from "@/store/transfer-store";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -288,20 +288,15 @@ export const useFileBatchAction = (
       const failedIds: string[] = [];
       for (const id of targets) {
         try {
-          const r = await nv.delete_object(id);
-          r.match(
-            (okId) => {
-              const k = String(okId ?? id);
-              successIds.push(k);
-              setRemovedIds((prev) => new Set(prev).add(k));
-              setSelectedIds((prev) => {
-                const next = new Set(prev);
-                next.delete(k);
-                return next;
-              });
-            },
-            () => failedIds.push(id),
-          );
+          const okId = await api.delete_object(id);
+          const k = String(okId ?? id);
+          successIds.push(k);
+          setRemovedIds((prev) => new Set(prev).add(k));
+          setSelectedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(k);
+            return next;
+          });
         } catch {
           failedIds.push(id);
         }

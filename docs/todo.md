@@ -4,3 +4,4 @@
 4. add exit-the-app-confirmation for mobile
 5. add task status push notification <overall download/upload progress/completed/failed/paused>
 6. persist tranmission task status in backend and retrieve it in frontend
+7. BUG: copy_to_tree

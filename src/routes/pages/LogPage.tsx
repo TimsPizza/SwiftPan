@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { nv, queries } from "@/lib/api/tauriBridge";
+import { api, queries } from "@/lib/api/tauriBridge";
 import { useLogStore } from "@/store/log-store";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -22,7 +22,13 @@ export default function LogPage() {
   const entries = useLogStore((s) => s.entries);
   const [autoScroll, setAutoScroll] = useState(true);
   const tailRef = useRef<HTMLDivElement>(null);
-  const { data: logStatus, isLoading } = queries.useLogStatus();
+  const {
+    data: logStatus,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = queries.useLogStatus();
   const toggleAutoScroll = () => {
     setAutoScroll((s) => !s);
   };
@@ -40,13 +46,29 @@ export default function LogPage() {
   }, [logStatus?.level]);
 
   const applyLevel = async (level: string) => {
-    // guarenteed to be one of the values
-    await nv.log_set_level(level as any);
+    // guaranteed to be one of the values
+    try {
+      await api.log_set_level(level as any);
+      toast.success("Log level updated");
+    } catch (err) {
+      console.error(err);
+      toast.error(
+        `Failed to update log level: ${String((err as any)?.message || err)}`,
+      );
+    }
   };
 
   const clearLogs = async () => {
-    await nv.log_clear();
-    useLogStore.getState().clear();
+    try {
+      await api.log_clear();
+      useLogStore.getState().clear();
+      toast.success("Logs cleared");
+    } catch (err) {
+      console.error(err);
+      toast.error(
+        `Failed to clear logs: ${String((err as any)?.message || err)}`,
+      );
+    }
   };
 
   const copyLogs = () => {
@@ -66,30 +88,47 @@ export default function LogPage() {
             <h2>Logs</h2>
           </CardTitle>
           <div className="flex flex-col items-start gap-4">
-            <div className="flex items-center gap-2">
-              <Label>Log Level</Label>
-              {isLoading ? (
-                <LoadingSpinner />
-              ) : (
-                <Select
-                  value={level}
-                  onValueChange={(v: any) => {
-                    setLevel(v as any);
-                    void applyLevel(v);
-                  }}
-                >
-                  <SelectTrigger size="sm">
-                    <SelectValue placeholder="Level" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="trace">Trace</SelectItem>
-                    <SelectItem value="debug">Debug</SelectItem>
-                    <SelectItem value="info">Info</SelectItem>
-                    <SelectItem value="warn">Warn</SelectItem>
-                    <SelectItem value="error">Error</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <Label>Log Level</Label>
+                {isLoading ? (
+                  <LoadingSpinner />
+                ) : isError ? (
+                  <div className="flex items-center gap-2 text-sm text-destructive">
+                    <span>
+                      {String(
+                        (error as any)?.message || "Failed to load log status",
+                      )}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void refetch()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : (
+                  <Select
+                    value={level}
+                    onValueChange={(v: any) => {
+                      setLevel(v as any);
+                      void applyLevel(v);
+                    }}
+                  >
+                    <SelectTrigger size="sm">
+                      <SelectValue placeholder="Level" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="trace">Trace</SelectItem>
+                      <SelectItem value="debug">Debug</SelectItem>
+                      <SelectItem value="info">Info</SelectItem>
+                      <SelectItem value="warn">Warn</SelectItem>
+                      <SelectItem value="error">Error</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <Label>Autoscroll</Label>

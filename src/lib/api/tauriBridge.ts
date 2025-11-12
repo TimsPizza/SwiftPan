@@ -1,13 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ResultAsync } from "neverthrow";
 import {
   useMutation,
   UseMutationOptions,
   useQuery,
   UseQueryOptions,
 } from "react-query";
-import type { CredentialExportPayload, DailyLedger, ShareLink, UploadStatus } from "./bridge";
+import type {
+  CredentialExportPayload,
+  DailyLedger,
+  ShareLink,
+  UploadStatus,
+} from "./bridge";
 
 export type ListPage = {
   prefix: string;
@@ -63,36 +67,35 @@ async function debugInvoke<T = unknown>(
   }
 }
 
-// neverthrow ResultAsync wrappers (non-breaking; optional usage)
-function resultInvoke<T = unknown>(
+// Thin helper to run every Tauri call through the debug logger.
+function invokeBridge<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,
 ) {
-  return ResultAsync.fromPromise<T, unknown>(
-    debugInvoke<T>(cmd, args),
-    (e) => e,
-  );
+  return debugInvoke<T>(cmd, args);
 }
 
-export const nv = {
+export const api = {
   settings_get: () =>
-    resultInvoke<{
+    invokeBridge<{
       logLevel: string;
       maxConcurrency: number;
       defaultDownloadDir?: string | null;
       uploadThumbnail: boolean;
+      androidTreeUri?: string | null;
     }>("settings_get"),
   settings_set: (settings: {
     logLevel: string;
     maxConcurrency: number;
     defaultDownloadDir?: string | null;
     uploadThumbnail: boolean;
+    androidTreeUri?: string | null;
   }) =>
-    resultInvoke<void>("settings_set", {
+    invokeBridge<void>("settings_set", {
       settings,
     }),
   backend_set_credentials: (bundle: unknown) =>
-    resultInvoke<void>("backend_set_credentials", {
+    invokeBridge<void>("backend_set_credentials", {
       bundle,
     }),
   backend_patch_credentials: (
@@ -104,12 +107,12 @@ export const nv = {
       region?: string;
     }>,
   ) =>
-    resultInvoke<void>("backend_patch_credentials", {
+    invokeBridge<void>("backend_patch_credentials", {
       patch,
     }),
-  backend_status: () => resultInvoke("backend_status"),
+  backend_status: () => invokeBridge("backend_status"),
   backend_credentials_redacted: () =>
-    resultInvoke<{
+    invokeBridge<{
       endpoint: string;
       access_key_id: string;
       secret_access_key: string;
@@ -117,26 +120,26 @@ export const nv = {
       region?: string;
     }>("backend_credentials_redacted"),
   backend_export_credentials_package: () =>
-    resultInvoke<CredentialExportPayload>("backend_export_credentials_package"),
+    invokeBridge<CredentialExportPayload>("backend_export_credentials_package"),
   backend_import_credentials_package: (encoded: string) =>
-    resultInvoke<void>("backend_import_credentials_package", {
+    invokeBridge<void>("backend_import_credentials_package", {
       encoded,
     }),
   vault_set_manual: (bundle: unknown) =>
-    resultInvoke<void>("vault_set_manual", {
+    invokeBridge<void>("vault_set_manual", {
       bundle,
     }),
-  vault_status: () => resultInvoke("vault_status"),
-  r2_sanity_check: () => resultInvoke("r2_sanity_check"),
+  vault_status: () => invokeBridge("vault_status"),
+  r2_sanity_check: () => invokeBridge("r2_sanity_check"),
   // deprecated
   list_objects: (prefix = "", token?: string, max = 1000) =>
-    resultInvoke<ListPage>("list_objects", {
+    invokeBridge<ListPage>("list_objects", {
       prefix,
       token,
       maxKeys: max,
     }),
   list_all_objects: (maxTotal = 10000) =>
-    resultInvoke<
+    invokeBridge<
       {
         key: string;
         size?: number;
@@ -147,14 +150,14 @@ export const nv = {
       }[]
     >("list_all_objects", { maxTotal }),
   delete_object: (key: string) =>
-    resultInvoke<string>("delete_object", { key }),
+    invokeBridge<string>("delete_object", { key }),
   share_generate: (params: {
     key: string;
     ttl_secs: number;
     download_filename?: string;
-  }) => resultInvoke<ShareLink>("share_generate", { params }),
+  }) => invokeBridge<ShareLink>("share_generate", { params }),
   share_list: () =>
-    resultInvoke<
+    invokeBridge<
       {
         key: string;
         url: string;
@@ -171,35 +174,35 @@ export const nv = {
     part_size: number;
     content_type?: string;
     content_disposition?: string;
-  }) => resultInvoke<string>("upload_new", { params }),
+  }) => invokeBridge<string>("upload_new", { params }),
   upload_new_stream: (params: {
     key: string;
     bytes_total: number;
     part_size: number;
     content_type?: string;
     content_disposition?: string;
-  }) => resultInvoke<string>("upload_new_stream", { params }),
+  }) => invokeBridge<string>("upload_new_stream", { params }),
   upload_stream_write: (transferId: string, chunk: Uint8Array | number[]) =>
-    resultInvoke<void>("upload_stream_write", {
+    invokeBridge<void>("upload_stream_write", {
       transferId,
       chunk: Array.from(chunk as any),
     }),
   upload_stream_finish: (transferId: string) =>
-    resultInvoke<void>("upload_stream_finish", { transferId }),
+    invokeBridge<void>("upload_stream_finish", { transferId }),
   upload_ctrl: (transferId: string, action: "pause" | "resume" | "cancel") =>
-    resultInvoke<void>("upload_ctrl", { transferId, action }),
+    invokeBridge<void>("upload_ctrl", { transferId, action }),
   upload_status: (transferId: string) =>
-    resultInvoke<UploadStatus>("upload_status", { transferId }),
+    invokeBridge<UploadStatus>("upload_status", { transferId }),
   download_new: (params: {
     key: string;
     dest_path: string;
     chunk_size: number;
     expected_etag?: string;
-  }) => resultInvoke<string>("download_new", { params }),
+  }) => invokeBridge<string>("download_new", { params }),
   download_ctrl: (transferId: string, action: "pause" | "resume" | "cancel") =>
-    resultInvoke<void>("download_ctrl", { transferId, action }),
+    invokeBridge<void>("download_ctrl", { transferId, action }),
   download_status: (transferId: string) =>
-    resultInvoke<{
+    invokeBridge<{
       transfer_id: string;
       key: string;
       bytes_total?: number;
@@ -209,13 +212,13 @@ export const nv = {
       observed_etag?: string;
       last_error?: unknown;
     }>("download_status", { transferId }),
-  download_sandbox_dir: () => resultInvoke<string>("download_sandbox_dir"),
+  download_sandbox_dir: () => invokeBridge<string>("download_sandbox_dir"),
   usage_merge_day: (date: string) =>
-    resultInvoke<DailyLedger>("usage_merge_day", { date }),
+    invokeBridge<DailyLedger>("usage_merge_day", { date }),
   usage_list_month: (prefix: string) =>
-    resultInvoke<DailyLedger[]>("usage_list_month", { prefix }),
+    invokeBridge<DailyLedger[]>("usage_list_month", { prefix }),
   usage_month_cost: (prefix: string) =>
-    resultInvoke<{
+    invokeBridge<{
       month: string;
       storage: {
         sum_peak_gb: number;
@@ -241,29 +244,23 @@ export const nv = {
       total_cost_usd: number;
     }>("usage_month_cost", { prefix }),
   // Logs
-  log_tail: (lines?: number) => resultInvoke<string>("log_tail", { lines }),
-  log_clear: () => resultInvoke<void>("log_clear"),
+  log_tail: (lines?: number) => invokeBridge<string>("log_tail", { lines }),
+  log_clear: () => invokeBridge<void>("log_clear"),
   log_set_level: (level: "trace" | "debug" | "info" | "warn" | "error") =>
-    resultInvoke<void>("log_set_level", { level }),
+    invokeBridge<void>("log_set_level", { level }),
   log_get_status: () =>
-    resultInvoke<{
+    invokeBridge<{
       level: string;
       cache_lines: number;
       file_path: string;
       file_size_bytes: number;
     }>("log_get_status"),
-  ui_status_bar_height: () => resultInvoke<number>("ui_status_bar_height"),
+  ui_status_bar_height: () => invokeBridge<number>("ui_status_bar_height"),
   // Android SAF (Storage Access Framework) APIs
   android_pick_download_dir: () =>
-    resultInvoke<string>("android_pick_download_dir"),
+    invokeBridge<string>("android_pick_download_dir"),
   android_get_persisted_download_dir: () =>
-    resultInvoke<string | null>("android_get_persisted_download_dir"),
-  android_copy_from_path_to_tree: (params: {
-    src_path: string;
-    tree_uri: string;
-    relative_path: string;
-    mime?: string;
-  }) => resultInvoke<void>("android_copy_from_path_to_tree", { params }),
+    invokeBridge<string | null>("android_get_persisted_download_dir"),
   android_fs_copy: (params: {
     direction: "sandbox_to_tree" | "tree_to_sandbox" | "uri_to_sandbox";
     local_path: string;
@@ -271,26 +268,29 @@ export const nv = {
     relative_path?: string;
     mime?: string;
     uri?: string;
-  }) => resultInvoke<void>("android_fs_copy", { params }),
+  }) => invokeBridge<void>("android_fs_copy", { params }),
   // Android uploads via SAF (native; avoids JS streaming)
   android_pick_upload_files: () =>
-    resultInvoke<Array<{ uri: string; name: string; size?: number }>>(
+    invokeBridge<Array<{ uri: string; name: string; size?: number }>>(
       "android_pick_upload_files",
     ),
   android_upload_from_uri: (params: {
     key: string;
     uri: string;
     part_size: number;
-  }) => resultInvoke<string>("android_upload_from_uri", { params }),
+  }) => invokeBridge<string>("android_upload_from_uri", { params }),
 };
 
 export async function applyStatusBarInsetFromNative() {
   try {
-    const r = await nv.ui_status_bar_height();
-    console.log("[tauriBridge] fetched status bar height (native px):", r);
+    const nativeValue = await api.ui_status_bar_height();
+    console.log(
+      "[tauriBridge] fetched status bar height (native px):",
+      nativeValue,
+    );
     // Native returns physical pixels on both Android (px) and iOS (points * scale).
     // CSS expects logical pixels. Convert by dividing devicePixelRatio.
-    const nativePx = (await r.unwrapOr(0)) || 0;
+    const nativePx = nativeValue ?? 0;
     const dpr = Math.max(1, (globalThis as any).devicePixelRatio || 1);
     const cssPxFromNative = Math.max(0, Math.round(nativePx / dpr));
 
@@ -325,7 +325,10 @@ export const queries = {
   useSettings: (opts?: UseQueryOptions<any>) =>
     useQuery({
       queryKey: ["app_settings"],
-      queryFn: async () => (await nv.settings_get()).unwrapOr(null),
+      queryFn: async () => {
+        const settings = await api.settings_get();
+        return settings ?? null;
+      },
       staleTime: 30_000,
       ...opts,
     }),
@@ -335,7 +338,10 @@ export const queries = {
   ) =>
     useQuery({
       queryKey: ["list_all_objects", maxTotal],
-      queryFn: async () => (await nv.list_all_objects(maxTotal)).unwrapOr([]),
+      queryFn: async () => {
+        const items = await api.list_all_objects(maxTotal);
+        return items ?? [];
+      },
       staleTime: 300_000,
       cacheTime: 600_000,
       refetchOnWindowFocus: false,
@@ -345,33 +351,47 @@ export const queries = {
   useBackendStatus: (opts?: UseQueryOptions<any>) =>
     useQuery({
       queryKey: ["backend_status"],
-      queryFn: async () => (await nv.backend_status()).unwrapOr({}),
+      queryFn: async () => {
+        const status = await api.backend_status();
+        return status ?? {};
+      },
       staleTime: 10_000,
       ...opts,
     }),
   useBackendCredentialsRedacted: (opts?: UseQueryOptions<any>) =>
     useQuery({
       queryKey: ["backend_credentials_redacted"],
-      queryFn: async () =>
-        (await nv.backend_credentials_redacted()).unwrapOr(null),
+      queryFn: async () => {
+        const creds = await api.backend_credentials_redacted();
+        return creds ?? null;
+      },
       ...opts,
     }),
   useUsageListMonth: (prefix: string, opts?: UseQueryOptions<any>) =>
     useQuery({
       queryKey: ["usage_list_month", prefix],
-      queryFn: async () => (await nv.usage_list_month(prefix)).unwrapOr([]),
+      queryFn: async () => {
+        const usage = await api.usage_list_month(prefix);
+        return usage ?? [];
+      },
       ...opts,
     }),
   useUsageMonthCost: (prefix: string, opts?: UseQueryOptions<any>) =>
     useQuery({
       queryKey: ["usage_month_cost", prefix],
-      queryFn: async () => (await nv.usage_month_cost(prefix)).unwrapOr(null),
+      queryFn: async () => {
+        const cost = await api.usage_month_cost(prefix);
+        return cost ?? null;
+      },
       ...opts,
     }),
   useLogStatus: (opts?: UseQueryOptions<any>) =>
     useQuery({
       queryKey: ["log_status"],
-      queryFn: async () => (await nv.log_get_status()).unwrapOr(null),
+      queryFn: async () => {
+        const status = await api.log_get_status();
+        return status ?? null;
+      },
       refetchInterval: 10_000,
       ...opts,
     }),
@@ -383,9 +403,9 @@ export const mutations = {
       mutationFn: async (bundle: any) => {
         // For compatibility, accept either full bundle { r2: {...} } or direct patch shape
         if (bundle && bundle.r2) {
-          await await nv.backend_set_credentials(bundle).unwrapOr(undefined);
+          await api.backend_set_credentials(bundle);
         } else {
-          await await nv.backend_patch_credentials(bundle).unwrapOr(undefined);
+          await api.backend_patch_credentials(bundle);
         }
       },
       ...opts,
@@ -393,17 +413,14 @@ export const mutations = {
   useR2Sanity: (opts?: UseMutationOptions<void, unknown, void>) =>
     useMutation({
       mutationFn: async () => {
-        const r = await nv.r2_sanity_check();
-        if (r.isErr()) {
-          throw r.error;
-        }
+        await api.r2_sanity_check();
       },
       ...opts,
     }),
   useUsageMergeDay: (opts?: UseMutationOptions<void, unknown, string>) =>
     useMutation({
       mutationFn: async (date: string) => {
-        await (await nv.usage_merge_day(date)).unwrapOr(undefined);
+        await api.usage_merge_day(date);
       },
       ...opts,
     }),
@@ -412,13 +429,7 @@ export const mutations = {
   ) =>
     useMutation({
       mutationFn: async () => {
-        const res = await nv.backend_export_credentials_package();
-        return res.match(
-          (ok) => ok,
-          (err) => {
-            throw err;
-          },
-        );
+        return api.backend_export_credentials_package();
       },
       ...opts,
     }),
@@ -427,13 +438,7 @@ export const mutations = {
   ) =>
     useMutation({
       mutationFn: async ({ encoded }) => {
-        const res = await nv.backend_import_credentials_package(encoded);
-        return res.match(
-          () => undefined,
-          (err) => {
-            throw err;
-          },
-        );
+        await api.backend_import_credentials_package(encoded);
       },
       ...opts,
     }),

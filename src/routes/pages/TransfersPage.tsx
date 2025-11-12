@@ -1,10 +1,11 @@
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { nv } from "@/lib/api/tauriBridge";
+import { api } from "@/lib/api/tauriBridge";
 import { formatBytes } from "@/lib/utils";
 import { useTransferStore } from "@/store/transfer-store";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 export default function TransfersPage() {
   const items = useTransferStore((s) => s.items);
@@ -32,8 +33,13 @@ export default function TransfersPage() {
     if (busy.has(id)) return;
     setBusyFor(id, true);
     try {
-      if (type === "upload") await nv.upload_ctrl(id, action);
-      else await nv.download_ctrl(id, action);
+      if (type === "upload") await api.upload_ctrl(id, action);
+      else await api.download_ctrl(id, action);
+    } catch (err) {
+      console.error(err);
+      toast.error(
+        `Failed to ${action} ${type}: ${String((err as any)?.message || err)}`,
+      );
     } finally {
       setBusyFor(id, false);
     }

@@ -46,6 +46,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-persisted-scope = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-android-fs = "17.3"
+tauri-plugin-opener = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 opendal = { version = "0.54", default-features = false, features = ["services-s3"] }

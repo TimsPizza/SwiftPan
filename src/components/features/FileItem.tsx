@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/Button";
 import { RippleContainer } from "@/components/ui/container";
 import { TableCell } from "@/components/ui/table";
 import type { FileItem as TFileItem } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
+import { api } from "@/lib/api/tauriBridge";
 import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
 import { motion } from "framer-motion";
 import {
@@ -76,15 +76,12 @@ export const MobileFileItem = ({
       try {
         const key = (file as any).thumbnailKey as string | undefined;
         if (!key) return;
-        const r = await nv.share_generate({ key, ttl_secs: 600 });
-        r.match(
-          (link: { url: string }) => {
-            if (!alive) return;
-            setThumbUrl(link.url);
-          },
-          () => {},
-        );
-      } catch {}
+        const link = await api.share_generate({ key, ttl_secs: 600 });
+        if (!alive) return;
+        setThumbUrl(link.url);
+      } catch (err) {
+        console.warn("thumbnail link fetch failed", err);
+      }
     }
     loadThumb();
     return () => {
@@ -134,7 +131,12 @@ export const MobileFileItem = ({
         className="relative ml-1 size-10 overflow-hidden rounded-full"
         onPointerDown={(e) => {
           if (!e.isPrimary) return;
-          tapRef.current = { active: true, sx: e.clientX, sy: e.clientY, moved: false };
+          tapRef.current = {
+            active: true,
+            sx: e.clientX,
+            sy: e.clientY,
+            moved: false,
+          };
         }}
         onPointerMove={(e) => {
           if (!tapRef.current.active) return;

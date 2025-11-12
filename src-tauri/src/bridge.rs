@@ -94,106 +94,6 @@ pub async fn android_get_persisted_download_dir(
     Ok(crate::settings::get().android_tree_uri.clone())
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct AndroidCopyParams {
-    pub src_path: String,      // absolute local path in sandbox
-    pub tree_uri: String,      // content://.../tree/...
-    pub relative_path: String, // e.g. "dir1/dir2/file.bin"
-    pub mime: Option<String>,
-}
-
-// Copy one local file to the SAF tree location, creating parent dirs if needed
-#[tauri::command]
-pub async fn android_copy_from_path_to_tree(
-    app: tauri::AppHandle,
-    params: AndroidCopyParams,
-) -> SpResult<()> {
-    #[cfg(target_os = "android")]
-    {
-        use std::io::{BufReader, Read, Write};
-
-        let api = app.android_fs();
-        let base = FileUri::from_str(&params.tree_uri).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("tree uri parse: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-
-        // ensure parent dirs
-        if let Some(parent) = std::path::Path::new(&params.relative_path).parent() {
-            let parent_rel = parent.to_string_lossy();
-            api.create_dir_all(&base, parent_rel.as_ref())
-                .map_err(|e| SpError {
-                    kind: ErrorKind::NotRetriable,
-                    message: format!("create_dir_all: {e}"),
-                    retry_after_ms: None,
-                    context: None,
-                    at: chrono::Utc::now().timestamp_millis(),
-                })?;
-        }
-
-        // create file
-        let file_uri = api
-            .create_new_file(&base, &params.relative_path, params.mime.as_deref())
-            .map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("create_file: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-
-        // open writable stream
-        let mut ws = api.open_writable_stream(&file_uri).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("open_writable_stream: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-
-        // read src and copy
-        let f = std::fs::File::open(&params.src_path).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("open src {}: {e}", &params.src_path),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        let mut br = BufReader::new(f);
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = br.read(&mut buf).map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("read: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-            if n == 0 {
-                break;
-            }
-            ws.write_all(&buf[..n]).map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("write: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: chrono::Utc::now().timestamp_millis(),
-            })?;
-        }
-        // drop ws to close
-        drop(ws);
-        return Ok(());
-    }
-    #[allow(unreachable_code)]
-    {
-        let _ = app;
-        let _ = params;
-        Err(err_not_implemented("android_copy_from_path_to_tree"))
-    }
-}
 #[tauri::command]
 pub async fn backend_credentials_redacted() -> SpResult<RedactedCredentials> {
     crate::logger::debug("bridge", "backend_credentials_redacted");
@@ -273,6 +173,9 @@ pub async fn android_fs_copy(app: tauri::AppHandle, params: AndroidFsCopyParams)
                 let rel = params
                     .relative_path
                     .ok_or_else(|| err_invalid("relative_path required"))?;
+                if rel.trim().is_empty() {
+                    return Err(err_invalid("relative_path required"));
+                }
                 let base = FileUri::from_str(&tree_uri).map_err(|e| SpError {
                     kind: ErrorKind::NotRetriable,
                     message: format!("tree uri parse: {e}"),
@@ -282,14 +185,16 @@ pub async fn android_fs_copy(app: tauri::AppHandle, params: AndroidFsCopyParams)
                 })?;
                 if let Some(parent) = std::path::Path::new(&rel).parent() {
                     let parent_rel = parent.to_string_lossy();
-                    api.create_dir_all(&base, parent_rel.as_ref())
-                        .map_err(|e| SpError {
-                            kind: ErrorKind::NotRetriable,
-                            message: format!("create_dir_all: {e}"),
-                            retry_after_ms: None,
-                            context: None,
-                            at: chrono::Utc::now().timestamp_millis(),
-                        })?;
+                    if !parent_rel.is_empty() && parent_rel != "." {
+                        api.create_dir_all(&base, parent_rel.as_ref())
+                            .map_err(|e| SpError {
+                                kind: ErrorKind::NotRetriable,
+                                message: format!("create_dir_all: {e}"),
+                                retry_after_ms: None,
+                                context: None,
+                                at: chrono::Utc::now().timestamp_millis(),
+                            })?;
+                    }
                 }
                 let file_uri = api
                     .create_new_file(&base, &rel, params.mime.as_deref())

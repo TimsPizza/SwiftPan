@@ -1,5 +1,5 @@
 import type { FileItem as File } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
+import { api } from "@/lib/api/tauriBridge";
 import { useAppStore } from "@/store/app-store";
 import { useTransferStore } from "@/store/transfer-store";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -24,12 +24,9 @@ export function useDesktopFileTransfer(files?: File[]) {
     async (chosen: string) => {
       try {
         setDefaultBase(chosen);
-        const s = await nv.settings_get();
-        const app = await s.unwrapOr(null as any);
+        const app = await api.settings_get();
         if (app) {
-          await (
-            await nv.settings_set({ ...app, defaultDownloadDir: chosen })
-          ).unwrapOr(undefined);
+          await api.settings_set({ ...app, defaultDownloadDir: chosen });
         }
       } catch {
         /* ignore */
@@ -63,20 +60,17 @@ export function useDesktopFileTransfer(files?: File[]) {
         toast.info(`Already uploading: ${key}`);
         continue;
       }
-      const res = await nv.upload_new({
-        key,
-        source_path: filePath,
-        part_size: 8 * 1024 * 1024,
-      });
-      res.match(
-        () => {
-          setTransfersOpen(true);
-        },
-        (e) => {
-          console.error(e);
-          toast.error(`Upload failed to start: ${fileName}`);
-        },
-      );
+      try {
+        await api.upload_new({
+          key,
+          source_path: filePath,
+          part_size: 8 * 1024 * 1024,
+        });
+        setTransfersOpen(true);
+      } catch (e) {
+        console.error(e);
+        toast.error(`Upload failed to start: ${fileName}`);
+      }
     }
   }, [files, setTransfersOpen]);
 
@@ -90,18 +84,17 @@ export function useDesktopFileTransfer(files?: File[]) {
       const picked = await save({ defaultPath });
       if (!picked) return;
       const destPath = String(picked);
-      const r = await nv.download_new({
-        key: file.id,
-        dest_path: destPath,
-        chunk_size: 4 * 1024 * 1024,
-      });
-      r.match(
-        () => setTransfersOpen(true),
-        (e) => {
-          console.error(e);
-          toast.error(`Failed to start download: ${file.filename}`);
-        },
-      );
+      try {
+        await api.download_new({
+          key: file.id,
+          dest_path: destPath,
+          chunk_size: 4 * 1024 * 1024,
+        });
+        setTransfersOpen(true);
+      } catch (e) {
+        console.error(e);
+        toast.error(`Failed to start download: ${file.filename}`);
+      }
     },
     [defaultBase, setTransfersOpen],
   );
@@ -141,19 +134,15 @@ export function useDesktopFileTransfer(files?: File[]) {
             toast.info(`Already downloading: ${f.filename}`);
             continue;
           }
-          const r = await nv.download_new({
+          await api.download_new({
             key: f.id,
             dest_path: dest,
             chunk_size: 4 * 1024 * 1024,
           });
-          r.match(
-            () => setTransfersOpen(true),
-            (e) => {
-              throw new Error(String((e as any)?.message || e));
-            },
-          );
+          setTransfersOpen(true);
           await new Promise((r) => setTimeout(r, 200));
         } catch (e) {
+          console.error(e);
           toast.error(`Failed to download ${f.filename}`);
         }
       }

@@ -9,6 +9,7 @@
     "core:default",
     "dialog:default",
     "notification:default",
-    "fs:default"
+    "fs:default",
+    "opener:default"
   ]
 }

@@ -6,10 +6,11 @@ import {
 } from "@/components/ui/drawer";
 import { Progress } from "@/components/ui/progress";
 import { SpError } from "@/lib/api/bridge";
-import { nv } from "@/lib/api/tauriBridge";
+import { api } from "@/lib/api/tauriBridge";
 import { formatBytes } from "@/lib/utils";
 import { useTransferStore } from "@/store/transfer-store";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 
 export default function TransferManager() {
   const items = useTransferStore((s) => s.items);
@@ -40,20 +41,30 @@ export default function TransferManager() {
     setBusyFor(id, true);
     try {
       if (type === "upload") {
-        await nv.upload_ctrl(id, action);
+        try {
+          await api.upload_ctrl(id, action);
+        } catch (err: any) {
+          console.error("Failed to control upload transfer", err);
+          toast.error(
+            `Failed to ${action} upload: ${String(err?.message ?? err ?? "unknown error")}`,
+          );
+        }
       } else {
-        const r = nv.download_ctrl(id, action);
-        await r.match(
-          () => {},
-          (e) => {
-            const err = e as SpError;
-            if (action === "cancel" && err.message.search("not found")) {
-              useTransferStore
-                .getState()
-                .update(id, { state: "failed", error: err.message });
-            }
-          },
-        );
+        try {
+          await api.download_ctrl(id, action);
+        } catch (e: any) {
+          const err = e as SpError;
+          if (action === "cancel" && err?.message?.includes("not found")) {
+            useTransferStore
+              .getState()
+              .update(id, { state: "failed", error: err.message });
+          } else {
+            console.error("Failed to control download transfer", err);
+            toast.error(
+              `Failed to ${action} download: ${String(err?.message ?? err ?? "unknown error")}`,
+            );
+          }
+        }
       }
     } finally {
       setBusyFor(id, false);

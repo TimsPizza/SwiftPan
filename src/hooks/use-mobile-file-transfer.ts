@@ -1,5 +1,6 @@
 import type { FileItem as File } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
+import { api } from "@/lib/api/tauriBridge";
+import { useAppStore } from "@/store/app-store";
 import { useTransferStore } from "@/store/transfer-store";
 import { remove } from "@tauri-apps/plugin-fs";
 import { useCallback } from "react";
@@ -7,6 +8,8 @@ import { toast } from "sonner";
 
 export function useMobileFileTransfer(files?: File[]) {
   const setTransfersOpen = useTransferStore((s) => s.ui.setOpen);
+  const androidTreeUri = useAppStore((s) => s.androidTreeUri);
+  const setAndroidTreeUri = useAppStore((s) => s.setAndroidTreeUri);
 
   const pickUploads = useCallback(async () => {
     const isAndroid = /Android/i.test(navigator.userAgent || "");
@@ -15,8 +18,7 @@ export function useMobileFileTransfer(files?: File[]) {
 
     if (isAndroid) {
       try {
-        const picked = await nv.android_pick_upload_files();
-        const entries = await picked.unwrapOr([] as any);
+        const entries = await api.android_pick_upload_files();
         if (!entries || entries.length === 0) {
           toast.error("No files selected");
           return;
@@ -41,23 +43,22 @@ export function useMobileFileTransfer(files?: File[]) {
             toast.info(`Already uploading: ${key}`);
             continue;
           }
-          const res = await nv.android_upload_from_uri({
-            key,
-            uri,
-            part_size: 8 * 1024 * 1024,
-          });
-          await res.match(
-            () => {
-              started++;
-              setTransfersOpen(true);
-            },
-            (err) => {
-              console.error(err);
-              toast.error(`Upload failed to start: ${key}`);
-            },
-          );
+          try {
+            await api.android_upload_from_uri({
+              key,
+              uri,
+              part_size: 8 * 1024 * 1024,
+            });
+            started += 1;
+            setTransfersOpen(true);
+          } catch (err) {
+            console.error(err);
+            toast.error(`Upload failed to start: ${key}`);
+          }
         }
-        // Regardless of started count, do not reopen another picker; exit.
+        if (started === 0) {
+          toast.error("No uploads started");
+        }
         return;
       } catch (e) {
         console.error(e);
@@ -91,28 +92,30 @@ export function useMobileFileTransfer(files?: File[]) {
           toast.info(`Already uploading: ${key}`);
           continue;
         }
-        const start = await nv.upload_new_stream({
-          key,
-          bytes_total: f.size,
-          part_size: 8 * 1024 * 1024,
-        });
-        await start.match(
-          async (id) => {
-            setTransfersOpen(true);
-            const CHUNK = 1024 * 1024 * 4;
-            for (let offset = 0; offset < f.size; offset += CHUNK) {
-              const slice = f.slice(offset, Math.min(f.size, offset + CHUNK));
-              const buf = new Uint8Array(await slice.arrayBuffer());
-              const r = await nv.upload_stream_write(id, buf);
-              if (r.isErr()) break;
+        try {
+          const id = await api.upload_new_stream({
+            key,
+            bytes_total: f.size,
+            part_size: 8 * 1024 * 1024,
+          });
+          setTransfersOpen(true);
+          const CHUNK = 1024 * 1024 * 4;
+          for (let offset = 0; offset < f.size; offset += CHUNK) {
+            const slice = f.slice(offset, Math.min(f.size, offset + CHUNK));
+            const buf = new Uint8Array(await slice.arrayBuffer());
+            try {
+              await api.upload_stream_write(id, buf);
+            } catch (err) {
+              console.error("upload_stream_write failed", err);
+              toast.error(`Upload chunk failed for ${key}`);
+              break;
             }
-            await nv.upload_stream_finish(id);
-          },
-          async (e) => {
-            console.error(e);
-            toast.error(`Upload failed to start: ${key}`);
-          },
-        );
+          }
+          await api.upload_stream_finish(id);
+        } catch (e) {
+          console.error(e);
+          toast.error(`Upload failed to start: ${key}`);
+        }
       }
     };
     input.click();
@@ -123,7 +126,7 @@ export function useMobileFileTransfer(files?: File[]) {
     for (let i = 0; i < 600; i++) {
       // up to ~60s
       try {
-        const st = await nv.download_status(id).unwrapOr(null as any);
+        const st = await api.download_status(id);
         const s = st as any;
         if (s && typeof s === "object") {
           const total = Number((s as any).bytes_total || 0);
@@ -137,27 +140,39 @@ export function useMobileFileTransfer(files?: File[]) {
   };
 
   const ensureTreeUri = useCallback(async (): Promise<string | null> => {
-    // Always prompt user to pick a download directory (no persistence)
+    if (androidTreeUri) return androidTreeUri;
+
     try {
-      const result = await nv.android_pick_download_dir();
-      const treeUri = await result.unwrapOr(null);
+      const persisted = await api.android_get_persisted_download_dir();
+      if (persisted) {
+        setAndroidTreeUri(persisted);
+        return persisted;
+      }
+    } catch (err) {
+      console.error(err);
+    }
+
+    try {
+      const treeUri = await api.android_pick_download_dir();
       if (!treeUri) {
         toast.error("No directory selected");
         return null;
       }
+      setAndroidTreeUri(treeUri);
+      toast.success("Download directory saved");
       return treeUri;
     } catch (e) {
       console.error(e);
       toast.error("Failed to open directory picker");
       return null;
     }
-  }, []);
+  }, [androidTreeUri, setAndroidTreeUri]);
 
   const downloadOne = useCallback(
     async (file: File) => {
       const tree = await ensureTreeUri();
       if (!tree) return;
-      const sandboxDir = await (await nv.download_sandbox_dir()).unwrapOr("");
+      const sandboxDir = await api.download_sandbox_dir();
       const base = String(sandboxDir || "");
       if (!base) {
         toast.error("No sandbox directory available");
@@ -165,39 +180,27 @@ export function useMobileFileTransfer(files?: File[]) {
       }
       const sandboxPath = `${base.replace(/[\\/]$/, "")}/${file.id}`;
       try {
-        const res = await nv.download_new({
+        const id = await api.download_new({
           key: file.id,
           dest_path: sandboxPath,
           chunk_size: 4 * 1024 * 1024,
         });
-        await res.match(
-          async (id) => {
-            setTransfersOpen(true);
-            const ok = await waitForDownloadComplete(String(id));
-            if (!ok) throw new Error("download timeout");
-            const copy = await nv.android_copy_from_path_to_tree({
-              src_path: sandboxPath,
-              tree_uri: tree,
-              relative_path: file.filename || `download_${file.id}`,
-              mime: undefined,
-            });
-            await copy.match(
-              async () => {
-                try {
-                  await remove(sandboxPath);
-                } catch {}
-                toast.success(`Downloaded: ${file.filename}`);
-              },
-              (err) => {
-                toast.error(`Failed to copy ${file.filename}: ${String(err)}`);
-              },
-            );
-          },
-          async (e) => {
-            throw new Error(String((e as any)?.message || e));
-          },
-        );
+        setTransfersOpen(true);
+        const ok = await waitForDownloadComplete(String(id));
+        if (!ok) throw new Error("download timeout");
+        await api.android_fs_copy({
+          direction: "sandbox_to_tree",
+          local_path: sandboxPath,
+          tree_uri: tree,
+          relative_path: file.filename || `download_${file.id}`,
+          mime: undefined,
+        });
+        try {
+          await remove(sandboxPath);
+        } catch {}
+        toast.success(`Downloaded: ${file.filename}`);
       } catch (e) {
+        console.error(e);
         toast.error(`Failed to download ${file.filename}`);
       }
     },
@@ -214,45 +217,31 @@ export function useMobileFileTransfer(files?: File[]) {
       toast.info(`Downloading ${many.length} files`);
       for (const file of many) {
         try {
-          const sandboxDir = await (
-            await nv.download_sandbox_dir()
-          ).unwrapOr("");
+          const sandboxDir = await api.download_sandbox_dir();
           const base = String(sandboxDir || "");
           if (!base) throw new Error("No sandbox directory available");
           const sandboxPath = `${base.replace(/[\\/]$/, "")}/${file.id}`;
-          const res = await nv.download_new({
+          const id = await api.download_new({
             key: file.id,
             dest_path: sandboxPath,
             chunk_size: 4 * 1024 * 1024,
           });
-          await res.match(
-            async (id) => {
-              setTransfersOpen(true);
-              const ok = await waitForDownloadComplete(String(id));
-              if (!ok) throw new Error("download timeout");
-              const copy = await nv.android_copy_from_path_to_tree({
-                src_path: sandboxPath,
-                tree_uri: tree,
-                relative_path: file.filename || `download_${file.id}`,
-                mime: undefined,
-              });
-              await copy.match(
-                async () => {
-                  try {
-                    await remove(sandboxPath);
-                  } catch {}
-                  success++;
-                },
-                () => {
-                  fail++;
-                },
-              );
-            },
-            async () => {
-              fail++;
-            },
-          );
-        } catch {
+          setTransfersOpen(true);
+          const ok = await waitForDownloadComplete(String(id));
+          if (!ok) throw new Error("download timeout");
+          await api.android_fs_copy({
+            direction: "sandbox_to_tree",
+            local_path: sandboxPath,
+            tree_uri: tree,
+            relative_path: file.filename || `download_${file.id}`,
+            mime: undefined,
+          });
+          try {
+            await remove(sandboxPath);
+          } catch {}
+          success++;
+        } catch (err) {
+          console.error(err);
           fail++;
         }
         await new Promise((r) => setTimeout(r, 200));

@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import type { FileItem, FileItem as TFileItem } from "@/lib/api/schemas";
-import { nv } from "@/lib/api/tauriBridge";
+import { api } from "@/lib/api/tauriBridge";
 import { formatBytes, formatRelativeTime, truncateFilename } from "@/lib/utils";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -124,15 +124,17 @@ export const FileShareDialog = ({
     setPending(true);
     try {
       const ttl_secs = Number(ttlHours) * 3600;
-      const { nv } = await import("@/lib/api/tauriBridge");
-      const r = await nv.share_generate({
+      const link = await api.share_generate({
         key: file.id,
         ttl_secs,
         download_filename: file.filename,
       });
-      r.match(
-        (v: any) => setUrl(v.url),
-        (e) => console.error(e),
+      setUrl(link.url);
+      toast.success("Share link created");
+    } catch (err: any) {
+      console.error(err);
+      toast.error(
+        `Failed to create share link: ${String(err?.message ?? err ?? "unknown error")}`,
       );
     } finally {
       setPending(false);
@@ -295,16 +297,27 @@ export const BatchShareDialog = ({
                 try {
                   const ttl_secs = Number(ttlHours) * 3600;
                   const out: { key: string; url: string }[] = [];
+                  const failures: string[] = [];
                   for (const f of selectedFiles) {
-                    const r = await nv.share_generate({
-                      key: f.id,
-                      ttl_secs,
-                      download_filename: f.filename,
-                    });
-                    r.match(
-                      (v: any) => out.push({ key: f.filename, url: v.url }),
-                      () => {},
+                    try {
+                      const link = await api.share_generate({
+                        key: f.id,
+                        ttl_secs,
+                        download_filename: f.filename,
+                      });
+                      out.push({ key: f.filename, url: link.url });
+                    } catch (err: any) {
+                      failures.push(
+                        `${f.filename}: ${String(err?.message ?? err ?? "unknown error")}`,
+                      );
+                    }
+                  }
+                  if (failures.length) {
+                    toast.error(
+                      `Failed to create ${failures.length} link(s).\n${failures.join("\n")}`,
                     );
+                  } else {
+                    toast.success("Share links created");
                   }
                   setLinks(out);
                 } finally {
