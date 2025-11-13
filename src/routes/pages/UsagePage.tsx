@@ -35,21 +35,41 @@ export default function UsagePage() {
   );
 
   const usageQ = queries.useUsageListMonth(month, {
-    onSuccess: (ok) => setItems(ok as any[]),
-    onError: (e: any) => setError(String(e?.message || e)),
     staleTime: 300_000,
-    cacheTime: 600_000,
+    gcTime: 600_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
   const costQ = queries.useUsageMonthCost(month, {
-    onSuccess: (ok) => setCost(ok),
-    onError: (e: any) => setError(String(e?.message || e)),
     staleTime: 300_000,
-    cacheTime: 600_000,
+    gcTime: 600_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+
+  useEffect(() => {
+    if (usageQ.data) {
+      setItems(usageQ.data as any[]);
+    }
+  }, [usageQ.data]);
+
+  useEffect(() => {
+    if (costQ.data) {
+      setCost(costQ.data as any);
+    }
+  }, [costQ.data]);
+
+  useEffect(() => {
+    if (usageQ.error) {
+      setError(String((usageQ.error as any)?.message || usageQ.error));
+    }
+  }, [usageQ.error]);
+
+  useEffect(() => {
+    if (costQ.error) {
+      setError(String((costQ.error as any)?.message || costQ.error));
+    }
+  }, [costQ.error]);
 
   useEffect(() => {
     // Auto merge today's deltas; backend will no-op if already merged today

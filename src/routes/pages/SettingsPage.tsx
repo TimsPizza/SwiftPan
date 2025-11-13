@@ -24,7 +24,7 @@ import {
 import { api, mutations, queries } from "@/lib/api/tauriBridge";
 import { useAppStore } from "@/store/app-store";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 
@@ -74,10 +74,7 @@ export default function SettingsPage() {
     /Android/i.test(navigator.userAgent || "");
 
   const statusQ = queries.useBackendStatus();
-  const credsQ = queries.useBackendCredentialsRedacted({
-    onSuccess: (ok) => setRedacted(ok),
-    onError: () => setRedacted(null),
-  });
+  const credsQ = queries.useBackendCredentialsRedacted();
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportEncoded, setExportEncoded] = useState("");
   const [importEncoded, setImportEncoded] = useState("");
@@ -88,6 +85,18 @@ export default function SettingsPage() {
     (credsQ.isError && credsQ.error
       ? String((credsQ.error as any)?.message || credsQ.error)
       : null);
+
+  useEffect(() => {
+    if (credsQ.data) {
+      setRedacted(credsQ.data as any);
+    }
+  }, [credsQ.data]);
+
+  useEffect(() => {
+    if (credsQ.isError) {
+      setRedacted(null);
+    }
+  }, [credsQ.isError]);
 
   const exportMutation = mutations.useExportCredentialsPackage({
     onSuccess: (payload) => {

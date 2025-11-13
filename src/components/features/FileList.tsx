@@ -48,7 +48,6 @@ import { useFileBatchAction } from "@/hooks/use-file-batch-action";
 import { useMobileFileTransfer } from "@/hooks/use-mobile-file-transfer";
 import type { FileItem as File } from "@/lib/api/schemas";
 import { cn } from "@/lib/utils";
-import { useFilesStore } from "@/store/files-store";
 import {
   ArrowUpDown,
   ChevronDown,
@@ -60,7 +59,6 @@ import { useState } from "react";
 
 // Desktop cell rendering is moved into DesktopFileItem within FileItem.tsx
 export const FileList = () => {
-  const files = useFilesStore((s) => s.files);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<File | null>(null);
   const [multiDeleteOpen, setMultiDeleteOpen] = useState(false);

@@ -367,7 +367,7 @@ export const queries = {
       },
       ...opts,
     }),
-  useUsageListMonth: (prefix: string, opts?: UseQueryOptions<any>) =>
+  useUsageListMonth: (prefix: string, opts?: Partial<UseQueryOptions<any>>) =>
     useQuery({
       queryKey: ["usage_list_month", prefix] as const,
       queryFn: async () => {
@@ -376,7 +376,7 @@ export const queries = {
       },
       ...opts,
     }),
-  useUsageMonthCost: (prefix: string, opts?: UseQueryOptions<any>) =>
+  useUsageMonthCost: (prefix: string, opts?: Partial<UseQueryOptions<any>>) =>
     useQuery({
       queryKey: ["usage_month_cost", prefix] as const,
       queryFn: async () => {
