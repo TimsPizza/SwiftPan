@@ -1,22 +1,21 @@
 import GlobalError from "@/components/fallback/GlobalError";
 import { FileList } from "@/components/features/FileList";
-import { Button } from "@/components/ui/Button";
-import { FileItem } from "@/lib/api/schemas";
 import { queries } from "@/lib/api/tauriBridge";
+import { useFilesStore } from "@/store/files-store";
 import { useEffect, useState } from "react";
 
 export default function FilesPage() {
-  const [files, setFiles] = useState<FileItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const setFilesStore = useFilesStore((s) => s.setFiles);
 
   const { data, isLoading, isError, refetch } = queries.useListAllObjects(
     10000,
-    {
-      staleTime: 300_000,
-      cacheTime: 600_000,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-    },
+    // {
+    //   staleTime: 30_000, // 30 seconds
+    //   gcTime: 60_000, // 1 minute
+    //   refetchOnWindowFocus: false,
+    //   refetchOnReconnect: true,
+    // },
   );
 
   useEffect(() => {
@@ -52,12 +51,12 @@ export default function FilesPage() {
             thumbnailKey: hasThumb ? it.key.replace(name, thumbKey) : undefined,
           } as any;
         });
-      setFiles(mapped);
+      setFilesStore(mapped);
       setError(null);
     } catch (e: any) {
       setError(String(e?.message || e));
     }
-  }, [data]);
+  }, [data, setFilesStore]);
 
   if (isLoading)
     return (
@@ -95,22 +94,10 @@ export default function FilesPage() {
       />
     );
   }
-  if (!files.length)
-    return (
-      <div className="flex w-full items-center justify-between">
-        <div className="p-4 text-sm">No files</div>
-        <Button
-          variant={"default"}
-          disabled={isLoading}
-          onClick={() => refetch()}
-        >
-          Refresh
-        </Button>
-      </div>
-    );
+
   return (
     <>
-      <FileList files={files} />
+      <FileList />
     </>
   );
 }

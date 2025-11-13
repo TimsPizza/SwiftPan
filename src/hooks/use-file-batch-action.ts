@@ -1,7 +1,6 @@
 import type { FileItem as File } from "@/lib/api/schemas";
 import { api } from "@/lib/api/tauriBridge";
-// import { useAppStore } from "@/store/app-store";
-// import { useTransferStore } from "@/store/transfer-store";
+import { useFilesStore } from "@/store/files-store";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -50,12 +49,11 @@ export interface UseFileBatchActionReturn {
   setSortOrder: (o: "asc" | "desc") => void;
 }
 
-export const useFileBatchAction = (
-  files: File[] | undefined,
-): UseFileBatchActionReturn => {
+export const useFileBatchAction = (): UseFileBatchActionReturn => {
   // download/upload concerns moved to platform-specific hooks
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
+  const files = useFilesStore((s) => s.files);
+  const removeFiles = useFilesStore((s) => s.removeFiles);
 
   // map for quick id -> file lookup
   const idToFile = useMemo(() => {
@@ -170,7 +168,6 @@ export const useFileBatchAction = (
 
     return (files || []).filter((f) => {
       if (!f) return false;
-      if (removedIds.has(f.id)) return false;
       if (
         q &&
         !f.filename.toLowerCase().includes(q) &&
@@ -188,7 +185,6 @@ export const useFileBatchAction = (
     });
   }, [
     files,
-    removedIds,
     search,
     timeFilter,
     minSizeMB,
@@ -231,13 +227,6 @@ export const useFileBatchAction = (
     if (!files) return;
     const valid = new Set(files.map((f) => f.id));
     setSelectedIds((prev) => {
-      const next = new Set<string>();
-      prev.forEach((id) => {
-        if (valid.has(id)) next.add(id);
-      });
-      return next;
-    });
-    setRemovedIds((prev) => {
       const next = new Set<string>();
       prev.forEach((id) => {
         if (valid.has(id)) next.add(id);
@@ -291,7 +280,6 @@ export const useFileBatchAction = (
           const okId = await api.delete_object(id);
           const k = String(okId ?? id);
           successIds.push(k);
-          setRemovedIds((prev) => new Set(prev).add(k));
           setSelectedIds((prev) => {
             const next = new Set(prev);
             next.delete(k);
@@ -315,9 +303,14 @@ export const useFileBatchAction = (
             : `Failed to delete ${failedIds.length} files`,
         );
       }
+
+      if (successIds.length > 0) {
+        removeFiles(successIds);
+      }
+
       return { successIds, failedIds };
     },
-    [selectedIds],
+    [selectedIds, removeFiles],
   );
 
   const getSelectedFiles = useCallback((): File[] => {

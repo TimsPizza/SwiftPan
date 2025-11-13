@@ -23,9 +23,9 @@ import {
 } from "@/lib/api/schemas";
 import { api, mutations, queries } from "@/lib/api/tauriBridge";
 import { useAppStore } from "@/store/app-store";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { useQueryClient } from "react-query";
 import { toast } from "sonner";
 
 export default function SettingsPage() {
@@ -136,7 +136,10 @@ export default function SettingsPage() {
       return;
     }
     await saveMutation.mutateAsync(parsed.data);
-    queryClient.invalidateQueries(["list_all_objects"]);
+    queryClient.invalidateQueries({
+      queryKey: ["list_all_objects"],
+      refetchType: "active",
+    });
     await Promise.all([statusQ.refetch(), credsQ.refetch()]);
     toast.success("Settings saved");
   });
@@ -237,9 +240,9 @@ export default function SettingsPage() {
                 </div>
                 <Button
                   onClick={handleExport}
-                  disabled={exportMutation.isLoading}
+                  disabled={exportMutation.isPending}
                 >
-                  {exportMutation.isLoading
+                  {exportMutation.isPending
                     ? "Generating…"
                     : "Generate payload"}
                 </Button>
@@ -258,15 +261,15 @@ export default function SettingsPage() {
                 <div className="flex flex-wrap gap-2">
                   <Button
                     onClick={handleImport}
-                    disabled={importMutation.isLoading}
+                    disabled={importMutation.isPending}
                   >
-                    {importMutation.isLoading ? "Importing…" : "Import"}
+                    {importMutation.isPending ? "Importing…" : "Import"}
                   </Button>
                   <Button
                     type="button"
                     variant="ghost"
                     onClick={() => setImportEncoded("")}
-                    disabled={importMutation.isLoading}
+                    disabled={importMutation.isPending}
                   >
                     Clear
                   </Button>
@@ -357,16 +360,16 @@ export default function SettingsPage() {
               type="submit"
               form=""
               onClick={save}
-              disabled={saveMutation.isLoading}
+              disabled={saveMutation.isPending}
             >
-              {saveMutation.isLoading ? "Saving…" : "Save Credentials"}
+              {saveMutation.isPending ? "Saving…" : "Save Credentials"}
             </Button>
             <Button
               variant="outline"
               onClick={() => sanityMutation.mutate()}
-              disabled={sanityMutation.isLoading}
+              disabled={sanityMutation.isPending}
             >
-              {sanityMutation.isLoading ? "Testing…" : "Test Connection"}
+              {sanityMutation.isPending ? "Testing…" : "Test Connection"}
             </Button>
           </div>
         </TabsContent>

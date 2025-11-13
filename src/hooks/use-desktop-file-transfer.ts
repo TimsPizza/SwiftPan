@@ -1,6 +1,7 @@
 import type { FileItem as File } from "@/lib/api/schemas";
 import { api } from "@/lib/api/tauriBridge";
 import { useAppStore } from "@/store/app-store";
+import { useFilesStore } from "@/store/files-store";
 import { useTransferStore } from "@/store/transfer-store";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useCallback } from "react";
@@ -15,10 +16,11 @@ function joinPath(base: string, name: string) {
   return `${trimmed}${sep}${name}`;
 }
 
-export function useDesktopFileTransfer(files?: File[]) {
+export function useDesktopFileTransfer() {
   const setTransfersOpen = useTransferStore((s) => s.ui.setOpen);
   const defaultBase = useAppStore((s) => s.defaultDownloadDir);
   const setDefaultBase = useAppStore((s) => s.setDefaultDownloadDir);
+  const files = useFilesStore((s) => s.files);
 
   const persistDefaultBase = useCallback(
     async (chosen: string) => {

@@ -1,15 +1,18 @@
 import type { FileItem as File } from "@/lib/api/schemas";
 import { api } from "@/lib/api/tauriBridge";
 import { useAppStore } from "@/store/app-store";
+import { useFilesStore } from "@/store/files-store";
 import { useTransferStore } from "@/store/transfer-store";
 import { remove } from "@tauri-apps/plugin-fs";
 import { useCallback } from "react";
 import { toast } from "sonner";
 
-export function useMobileFileTransfer(files?: File[]) {
+export function useMobileFileTransfer(filesOverride?: File[]) {
   const setTransfersOpen = useTransferStore((s) => s.ui.setOpen);
   const androidTreeUri = useAppStore((s) => s.androidTreeUri);
   const setAndroidTreeUri = useAppStore((s) => s.setAndroidTreeUri);
+  const allFiles = useFilesStore((s) => s.files);
+  const files = filesOverride ?? allFiles;
 
   const pickUploads = useCallback(async () => {
     const isAndroid = /Android/i.test(navigator.userAgent || "");
@@ -56,9 +59,11 @@ export function useMobileFileTransfer(files?: File[]) {
             toast.error(`Upload failed to start: ${key}`);
           }
         }
+
         if (started === 0) {
           toast.error("No uploads started");
         }
+
         return;
       } catch (e) {
         console.error(e);
@@ -117,6 +122,7 @@ export function useMobileFileTransfer(files?: File[]) {
           toast.error(`Upload failed to start: ${key}`);
         }
       }
+      ``;
     };
     input.click();
   }, [files, setTransfersOpen]);

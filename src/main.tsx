@@ -1,13 +1,13 @@
 import { applyStatusBarInsetFromNative } from "@/lib/api/tauriBridge";
 import "@/styles/globals.css";
 import "@/styles/tailwind.css";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "react-query";
 import { RouterProvider, createBrowserRouter } from "react-router-dom";
 import { routes } from "./routes";
 const router = createBrowserRouter(routes);
-const queryClient = new QueryClient({
+export const queryClient = new QueryClient({
   defaultOptions: {
     queries: { retry: 0, refetchOnWindowFocus: false },
     mutations: { retry: 0 },

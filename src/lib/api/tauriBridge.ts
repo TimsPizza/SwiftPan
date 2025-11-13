@@ -1,11 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import {
   useMutation,
   UseMutationOptions,
   useQuery,
   UseQueryOptions,
-} from "react-query";
+} from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   CredentialExportPayload,
   DailyLedger,
@@ -324,7 +324,7 @@ export async function applyStatusBarInsetFromNative() {
 export const queries = {
   useSettings: (opts?: UseQueryOptions<any>) =>
     useQuery({
-      queryKey: ["app_settings"],
+      queryKey: ["app_settings"] as const,
       queryFn: async () => {
         const settings = await api.settings_get();
         return settings ?? null;
@@ -334,23 +334,23 @@ export const queries = {
     }),
   useListAllObjects: (
     maxTotal = 10000,
-    opts?: UseQueryOptions<any, unknown, any, any>,
+    opts?: Partial<UseQueryOptions<any, unknown, any, any>>,
   ) =>
     useQuery({
-      queryKey: ["list_all_objects", maxTotal],
+      queryKey: ["list_all_objects"] as const,
       queryFn: async () => {
         const items = await api.list_all_objects(maxTotal);
         return items ?? [];
       },
-      staleTime: 300_000,
-      cacheTime: 600_000,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
+      // staleTime: 30_000,
+      // gcTime: 60_000,
+      // refetchOnWindowFocus: false,
+      // refetchOnReconnect: false,
       ...opts,
     }),
   useBackendStatus: (opts?: UseQueryOptions<any>) =>
     useQuery({
-      queryKey: ["backend_status"],
+      queryKey: ["backend_status"] as const,
       queryFn: async () => {
         const status = await api.backend_status();
         return status ?? {};
@@ -360,7 +360,7 @@ export const queries = {
     }),
   useBackendCredentialsRedacted: (opts?: UseQueryOptions<any>) =>
     useQuery({
-      queryKey: ["backend_credentials_redacted"],
+      queryKey: ["backend_credentials_redacted"] as const,
       queryFn: async () => {
         const creds = await api.backend_credentials_redacted();
         return creds ?? null;
@@ -369,7 +369,7 @@ export const queries = {
     }),
   useUsageListMonth: (prefix: string, opts?: UseQueryOptions<any>) =>
     useQuery({
-      queryKey: ["usage_list_month", prefix],
+      queryKey: ["usage_list_month", prefix] as const,
       queryFn: async () => {
         const usage = await api.usage_list_month(prefix);
         return usage ?? [];
@@ -378,7 +378,7 @@ export const queries = {
     }),
   useUsageMonthCost: (prefix: string, opts?: UseQueryOptions<any>) =>
     useQuery({
-      queryKey: ["usage_month_cost", prefix],
+      queryKey: ["usage_month_cost", prefix] as const,
       queryFn: async () => {
         const cost = await api.usage_month_cost(prefix);
         return cost ?? null;
@@ -387,7 +387,7 @@ export const queries = {
     }),
   useLogStatus: (opts?: UseQueryOptions<any>) =>
     useQuery({
-      queryKey: ["log_status"],
+      queryKey: ["log_status"] as const,
       queryFn: async () => {
         const status = await api.log_get_status();
         return status ?? null;

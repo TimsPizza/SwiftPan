@@ -42,7 +42,7 @@ export const GlobalError = ({
           )}
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
             {primaryLabel && onPrimary && (
-              <Button onClick={onPrimary} className="w-full sm:w-auto">
+              <Button onClick={onPrimary} className="sm:w-auto">
                 {primaryLabel}
               </Button>
             )}
@@ -50,7 +50,7 @@ export const GlobalError = ({
               <Button
                 variant="outline"
                 onClick={onSecondary}
-                className="w-full sm:w-auto"
+                className="sm:w-auto"
               >
                 {secondaryLabel}
               </Button>

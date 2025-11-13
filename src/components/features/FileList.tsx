@@ -48,16 +48,19 @@ import { useFileBatchAction } from "@/hooks/use-file-batch-action";
 import { useMobileFileTransfer } from "@/hooks/use-mobile-file-transfer";
 import type { FileItem as File } from "@/lib/api/schemas";
 import { cn } from "@/lib/utils";
-import { ArrowUpDown, ChevronDown, ChevronUp, FileIcon, UploadIcon } from "lucide-react";
+import { useFilesStore } from "@/store/files-store";
+import {
+  ArrowUpDown,
+  ChevronDown,
+  ChevronUp,
+  FileIcon,
+  UploadIcon,
+} from "lucide-react";
 import { useState } from "react";
 
-interface FileListProps {
-  files: File[];
-}
-
 // Desktop cell rendering is moved into DesktopFileItem within FileItem.tsx
-
-export const FileList = ({ files }: FileListProps) => {
+export const FileList = () => {
+  const files = useFilesStore((s) => s.files);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<File | null>(null);
   const [multiDeleteOpen, setMultiDeleteOpen] = useState(false);
@@ -78,11 +81,11 @@ export const FileList = ({ files }: FileListProps) => {
   // Filters/sort/pagination are managed by the hook
 
   // batch actions using hook (filters/selection/delete)
-  const batch = useFileBatchAction(files);
+  const batch = useFileBatchAction();
   const isAndroid = /Android/i.test(navigator.userAgent || "");
   const transfers = isAndroid
-    ? useMobileFileTransfer(files)
-    : useDesktopFileTransfer(files);
+    ? useMobileFileTransfer()
+    : useDesktopFileTransfer();
 
   // Pagination is fully managed by the hook
 
@@ -125,20 +128,6 @@ export const FileList = ({ files }: FileListProps) => {
   const openDownload = async (file: File) => {
     await transfers.downloadOne(file);
   };
-
-  if (!files || files.length === 0) {
-    return (
-      <Card>
-        <CardHeader className="text-center">
-          <FileIcon className="text-muted-foreground mx-auto mb-4 h-12 w-12" />
-          <CardTitle>No files found</CardTitle>
-          <CardDescription>
-            Upload your first file to get started
-          </CardDescription>
-        </CardHeader>
-      </Card>
-    );
-  }
 
   return (
     <div
@@ -404,20 +393,32 @@ export const FileList = ({ files }: FileListProps) => {
         {/* Mobile list */}
         <div
           id="mobile-file-container-wrapper"
-          className="md:!hiddenshrink max-h-4/5 min-h-0 overflow-y-auto"
+          className="max-h-4/5 min-h-0 shrink overflow-y-auto md:!hidden"
         >
           <div className="space-y-2">
-            {batch.pageFiles.map((file) => (
-              <FileItem
-                key={file.id}
-                file={file}
-                selected={batch.selectedIds.has(file.id)}
-                onSelect={() => batch.toggleOne(file.id)}
-                onDownload={() => openDownload(file)}
-                onMoreClick={(p) => openMenuAt(p, file)}
-                onLongPress={(p) => openMenuAt(p, file)}
-              />
-            ))}
+            {batch.pageFiles.length === 0 ? (
+              <Card>
+                <CardHeader className="text-center">
+                  <FileIcon className="text-muted-foreground mx-auto mb-4 h-12 w-12" />
+                  <CardTitle>No files found</CardTitle>
+                  <CardDescription>
+                    Upload your first file to get started
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            ) : (
+              batch.pageFiles.map((file) => (
+                <FileItem
+                  key={file.id}
+                  file={file}
+                  selected={batch.selectedIds.has(file.id)}
+                  onSelect={() => batch.toggleOne(file.id)}
+                  onDownload={() => openDownload(file)}
+                  onMoreClick={(p) => openMenuAt(p, file)}
+                  onLongPress={(p) => openMenuAt(p, file)}
+                />
+              ))
+            )}
           </div>
         </div>
 

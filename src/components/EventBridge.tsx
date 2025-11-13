@@ -6,6 +6,7 @@ import {
   onUploadEvent,
 } from "@/lib/api/tauriBridge";
 import { formatBytes } from "@/lib/utils";
+import { queryClient } from "@/main";
 import { useAppStore } from "@/store/app-store";
 import { useLogStore } from "@/store/log-store";
 import { useTransferStore } from "@/store/transfer-store";
@@ -306,7 +307,9 @@ async function notifyTransferEvent(
   }
 }
 
-function extractNotificationExtra(what: any): Record<string, unknown> | undefined {
+function extractNotificationExtra(
+  what: any,
+): Record<string, unknown> | undefined {
   if (!what || typeof what !== "object") return undefined;
   const raw = (what.extra ?? what.data) as unknown;
   if (!raw) return undefined;
@@ -353,7 +356,8 @@ async function openAndroidDownloadDirectoryFromNotification() {
 
 async function handleNotificationActionEvent(payload: any) {
   if (!payload || typeof payload !== "object") return;
-  const actionId = typeof payload.actionId === "string" ? payload.actionId : undefined;
+  const actionId =
+    typeof payload.actionId === "string" ? payload.actionId : undefined;
   if (actionId !== DEFAULT_NOTIFICATION_ACTION) return;
   const notification = payload.notification;
   const extra = extractNotificationExtra(notification);
@@ -489,6 +493,15 @@ function handleUploadEvent(ev: UploadEvent) {
         void notifyTransferEvent("upload", id, "Upload completed", k ?? id);
       }
       triggerAggregateUpdate(true);
+      queryClient.invalidateQueries({
+        queryKey: ["list_all_objects"],
+        refetchType: "active",
+      });
+      queryClient.refetchQueries({
+        queryKey: ["list_all_objects"],
+        type: "all",
+      });
+      console.log("query invalidated");
       break;
     }
     case "Failed": {

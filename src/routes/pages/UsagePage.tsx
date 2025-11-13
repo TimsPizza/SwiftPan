@@ -299,7 +299,7 @@ export default function UsagePage() {
                       )
                       .toLocaleString()}
                   </TableCell>
-                  <TableCell className="font-medium text-center">
+                  <TableCell className="text-center font-medium">
                     {items
                       .reduce(
                         (acc: number, d: any) =>
