@@ -1,6 +1,6 @@
 [package]
 name = "swift-pan"
-version = "0.1.1"
+version = "1.0.0"
 description = "Cloud drive using cloudflare R2"
 authors = ["timspizza"]
 license = ""

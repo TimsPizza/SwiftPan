@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Swift Pan",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "identifier": "com.timspizza.swiftpan",
   "build": {
     "frontendDist": "../build",
@@ -32,6 +32,11 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "wix": {
+        "version": "1.0.0"
+      }
+    }
   }
 }
