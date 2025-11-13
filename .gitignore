@@ -34,3 +34,6 @@ dist-ssr
 build/*
 # rust analyzer
 target/*
+
+
+keystore.properties
