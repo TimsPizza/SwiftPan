@@ -110,7 +110,7 @@ const FileDownloadDeleteTooltip = ({
       {/* drag handle */}
       <div
         data-drag-handle="true"
-        className="flex cursor-grab items-center justify-center pb-1"
+        className="flex cursor-grab touch-none items-center justify-center pb-1"
       >
         <div className="bg-muted-foreground/60 h-1 w-10 rounded-full" />
       </div>
