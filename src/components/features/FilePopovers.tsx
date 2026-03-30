@@ -59,6 +59,12 @@ export interface BatchShareDialogProps {
   centerOnMobile?: boolean;
 }
 
+function getFileTypeLabel(filename: string): string {
+  const ext = filename.split(".").pop()?.trim();
+  if (!ext) return "Unknown";
+  return ext.toUpperCase();
+}
+
 export const FileItemPopOverMenu = ({
   open,
   onOpenChange,
@@ -376,7 +382,7 @@ export const FileDetailsDialog = ({
             className="flex items-center justify-between gap-1"
           >
             <Label>Type</Label>
-            <Badge variant="outline">{file.mimeType}</Badge>
+            <Badge variant="outline">{getFileTypeLabel(file.filename)}</Badge>
           </div>
         </div>
       </DialogContent>

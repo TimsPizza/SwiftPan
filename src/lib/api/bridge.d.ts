@@ -8,7 +8,8 @@ export type SpError = {
     | "NotRetriable"
     | "SourceChanged"
     | "DiskFull"
-    | "NotImplemented";
+    | "NotImplemented"
+    | "TaskExists";
   message: string;
   retry_after_ms?: number;
   context?: Record<string, unknown>;
@@ -123,4 +124,10 @@ export type DailyLedger = {
   deleted_storage_bytes: number;
   rev: number;
   updated_at: string;
+};
+
+// New command: generate thumbnail and upload to R2
+export type GenerateThumbnailAndUploadArgs = {
+  key: string;
+  sourcePath: string; // mapped to Rust source_path
 };

@@ -151,6 +151,11 @@ export const api = {
     >("list_all_objects", { maxTotal }),
   delete_object: (key: string) =>
     invokeBridge<string>("delete_object", { key }),
+  generate_thumbnail_and_upload: (key: string, sourcePath: string) =>
+    invokeBridge<string | null>("generate_thumbnail_and_upload", {
+      key,
+      source_path: sourcePath,
+    }),
   share_generate: (params: {
     key: string;
     ttl_secs: number;

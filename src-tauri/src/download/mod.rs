@@ -123,6 +123,15 @@ pub async fn start_download(app: tauri::AppHandle, params: NewDownloadParams) ->
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
+        if g.contains_key(&key) {
+            return Err(SpError {
+                kind: ErrorKind::TaskExists,
+                message: "download with same key already exists".into(),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            });
+        }
         g.insert(
             id.clone(),
             Transfer {

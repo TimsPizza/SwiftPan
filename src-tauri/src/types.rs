@@ -10,6 +10,7 @@ pub enum ErrorKind {
     NotRetriable,
     SourceChanged,
     DiskFull,
+    TaskExists,
     NotImplemented,
 }
 

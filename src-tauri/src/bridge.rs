@@ -22,6 +22,31 @@ pub async fn backend_status() -> SpResult<BackendStatus> {
     r
 }
 
+// Generate a 128x128 thumbnail (<=16KB) using OS-native or pure-Rust path and upload to R2 as thumbnail_<key>.jpg
+#[tauri::command]
+pub async fn generate_thumbnail_and_upload(
+    _app: tauri::AppHandle,
+    key: String,
+    source_path: String,
+) -> SpResult<Option<String>> {
+    // Respect user setting; allow frontend to call this command explicitly
+    if !crate::settings::get().upload_thumbnail {
+        return Ok(None);
+    }
+    // Generate bytes (image: pure Rust; video: platform stubs for now)
+    let jpeg = crate::thumbnail::generate_thumbnail_bytes(&source_path, 128, 16 * 1024).await?;
+    let Some(bytes) = jpeg else {
+        return Ok(None);
+    };
+
+    // Upload bytes to R2
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
+    let client = r2_client::build_client(&bundle.r2).await?;
+    let thumb_key = format!("thumbnail_{}.jpg", key);
+    r2_client::put_object_bytes(&client, &thumb_key, bytes, None, false).await?;
+    Ok(Some(thumb_key))
+}
+
 // Let user pick a directory (one-time), save the Tree-URI persistently
 #[tauri::command]
 pub async fn android_pick_download_dir(app: tauri::AppHandle) -> SpResult<String> {

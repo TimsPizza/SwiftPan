@@ -5,7 +5,6 @@ export type FileItem = {
   id: string; // key
   filename: string;
   size: number;
-  mimeType: string;
   uploadedAt: number; // ms
   originalName: string; // full key
   thumbnailKey?: string; // optional thumbnail object key
@@ -31,7 +30,10 @@ export const SettingsSchema = z.object({
 // Patch schema: all fields optional, require at least one present
 export const SettingsPatchSchema = z
   .object({
-    endpoint: z.string().url({ message: "Endpoint must be a valid URL" }).optional(),
+    endpoint: z
+      .string()
+      .url({ message: "Endpoint must be a valid URL" })
+      .optional(),
     access_key_id: z.string().min(1, "Access Key ID is required").optional(),
     secret_access_key: z
       .string()
@@ -40,9 +42,13 @@ export const SettingsPatchSchema = z
     bucket: z.string().min(1, "Bucket is required").optional(),
     region: z.string().min(1, "Region is required").optional(),
   })
-  .refine((v) => Object.values(v).some((x) => x !== undefined && String(x).length > 0), {
-    message: "At least one field must be provided",
-  });
+  .refine(
+    (v) =>
+      Object.values(v).some((x) => x !== undefined && String(x).length > 0),
+    {
+      message: "At least one field must be provided",
+    },
+  );
 
 export type SettingsFormValues = {
   endpoint: string;

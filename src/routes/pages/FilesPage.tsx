@@ -45,7 +45,6 @@ export default function FilesPage() {
             id: it.key,
             filename: name,
             size: it.size ?? 0,
-            mimeType: "unknown",
             uploadedAt: it.last_modified_ms ?? Date.now(),
             originalName: it.key,
             thumbnailKey: hasThumb ? it.key.replace(name, thumbKey) : undefined,

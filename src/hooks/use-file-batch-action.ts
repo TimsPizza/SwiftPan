@@ -76,7 +76,7 @@ export const useFileBatchAction = (): UseFileBatchActionReturn => {
     "name" | "size" | "uploadedAt" | "type" | null
   >(null);
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
-  const getCategory = useCallback((filename: string, mimeType?: string) => {
+  const getCategory = useCallback((filename: string) => {
     const ext = filename.split(".").pop()?.toLowerCase();
     if (
       ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "tiff"].includes(
@@ -102,9 +102,6 @@ export const useFileBatchAction = (): UseFileBatchActionReturn => {
       ].includes(ext || "")
     )
       return "doc" as const;
-    if (mimeType?.startsWith("image/")) return "image" as const;
-    if (mimeType?.startsWith("video/")) return "video" as const;
-    if (mimeType?.startsWith("audio/")) return "audio" as const;
     return "other" as const;
   }, []);
   const toggleSort = useCallback(
@@ -136,9 +133,7 @@ export const useFileBatchAction = (): UseFileBatchActionReturn => {
           case "type":
             return (
               dir *
-              getCategory(a.filename, a.mimeType).localeCompare(
-                getCategory(b.filename, b.mimeType),
-              )
+              getCategory(a.filename).localeCompare(getCategory(b.filename))
             );
           default:
             return 0;
@@ -174,10 +169,7 @@ export const useFileBatchAction = (): UseFileBatchActionReturn => {
         !f.originalName.toLowerCase().includes(q)
       )
         return false;
-      if (
-        typeFilter !== "all" &&
-        getCategory(f.filename, f.mimeType) !== typeFilter
-      )
+      if (typeFilter !== "all" && getCategory(f.filename) !== typeFilter)
         return false;
       if (timeFilter !== "any" && f.uploadedAt < startTime) return false;
       if (f.size < minBytes || f.size > maxBytes) return false;

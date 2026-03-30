@@ -49,6 +49,7 @@ pub fn run() {
             crate::bridge::list_all_objects,
             crate::bridge::delete_object,
             crate::bridge::ui_status_bar_height,
+            crate::bridge::generate_thumbnail_and_upload,
             // Android SAF helpers
             crate::bridge::android_pick_download_dir,
             crate::bridge::android_get_persisted_download_dir,
@@ -122,6 +123,7 @@ pub mod r2_client;
 pub mod settings;
 pub mod share;
 pub mod sp_backend;
+pub mod thumbnail;
 pub mod types;
 pub mod upload;
 pub mod usage;

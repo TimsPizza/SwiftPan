@@ -1,6 +1,6 @@
 // Minimal placeholder API for type-check only
 export const fileApi = {
-  async prepareUpload(_: { filename: string; size: number; mimeType: string; hash: string }) {
+  async prepareUpload(_: { filename: string; size: number; hash: string }) {
     return {
       fileId: crypto.randomUUID?.() || `${Date.now()}`,
       sessionId: crypto.randomUUID?.() || `${Date.now()}-s`,
@@ -29,6 +29,10 @@ export const fileApi = {
 } as const;
 
 export const settingsService = {
-  async get() { return {} as any; },
-  async update(_: any) { return {} as any; },
+  async get() {
+    return {} as any;
+  },
+  async update(_: any) {
+    return {} as any;
+  },
 };
