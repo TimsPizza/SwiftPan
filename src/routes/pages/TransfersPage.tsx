@@ -45,9 +45,32 @@ export default function TransfersPage() {
     }
   };
 
-  const clearFinished = () => {
+  const removeTransfer = async (id: string, type: "upload" | "download") => {
+    if (busy.has(id)) return;
+    setBusyFor(id, true);
+    try {
+      await api.transfer_remove(id, type);
+      remove(id);
+    } catch (err) {
+      console.error(err);
+      toast.error(
+        `Failed to remove ${type}: ${String((err as any)?.message || err)}`,
+      );
+    } finally {
+      setBusyFor(id, false);
+    }
+  };
+
+  const clearFinished = async () => {
     for (const t of sorted) {
-      if (t.state === "completed" || t.state === "failed") remove(t.id);
+      if (
+        t.state === "completed" ||
+        t.state === "failed" ||
+        t.state === "cancelled"
+      ) {
+        // eslint-disable-next-line no-await-in-loop
+        await removeTransfer(t.id, t.type);
+      }
     }
   };
 
@@ -57,8 +80,12 @@ export default function TransfersPage() {
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Task Manager</CardTitle>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={clearFinished}>
-              Clear completed
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void clearFinished()}
+            >
+              Clear finished
             </Button>
           </div>
         </CardHeader>
@@ -75,7 +102,9 @@ export default function TransfersPage() {
                     )
                   : 0;
                 const canRemove =
-                  t.state === "completed" || t.state === "failed";
+                  t.state === "completed" ||
+                  t.state === "failed" ||
+                  t.state === "cancelled";
                 return (
                   <li
                     key={t.id}
@@ -130,7 +159,8 @@ export default function TransfersPage() {
                         <Button
                           size="sm"
                           variant="destructive"
-                          onClick={() => remove(t.id)}
+                          disabled={busy.has(t.id)}
+                          onClick={() => void removeTransfer(t.id, t.type)}
                         >
                           Remove
                         </Button>

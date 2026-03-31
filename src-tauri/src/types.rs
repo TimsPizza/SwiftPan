@@ -14,6 +14,35 @@ pub enum ErrorKind {
     NotImplemented,
 }
 
+impl ErrorKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::RetryableNet => "retryable_net",
+            Self::RetryableAuth => "retryable_auth",
+            Self::NotRetriable => "not_retriable",
+            Self::SourceChanged => "source_changed",
+            Self::DiskFull => "disk_full",
+            Self::TaskExists => "task_exists",
+            Self::NotImplemented => "not_implemented",
+        }
+    }
+
+    pub fn from_str(value: &str) -> SpResult<Self> {
+        match value {
+            "cancelled" => Ok(Self::Cancelled),
+            "retryable_net" => Ok(Self::RetryableNet),
+            "retryable_auth" => Ok(Self::RetryableAuth),
+            "not_retriable" => Ok(Self::NotRetriable),
+            "source_changed" => Ok(Self::SourceChanged),
+            "disk_full" => Ok(Self::DiskFull),
+            "task_exists" => Ok(Self::TaskExists),
+            "not_implemented" => Ok(Self::NotImplemented),
+            _ => Err(err_invalid("invalid error kind")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpError {
     pub kind: ErrorKind,

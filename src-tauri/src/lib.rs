@@ -45,6 +45,7 @@ pub fn run() {
             crate::bridge::download_status,
             crate::bridge::download_sandbox_dir,
             crate::bridge::transfer_list_active,
+            crate::bridge::transfer_remove,
             crate::bridge::share_generate,
             crate::bridge::share_list,
             crate::bridge::usage_merge_day,

@@ -22,6 +22,7 @@ pub struct TransferSnapshot {
     pub bytes_done: u64,
     pub rate_bps: u64,
     pub last_error: Option<SpError>,
+    pub last_fail_reason: Option<ErrorKind>,
     pub dest_path: Option<String>,
     pub android_tree_uri: Option<String>,
     pub android_relative_path: Option<String>,
@@ -37,10 +38,11 @@ pub fn db_url() -> &'static str {
 }
 
 pub fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "create_transfer_snapshots",
-        sql: r#"
+    vec![
+        Migration {
+            version: 1,
+            description: "create_transfer_snapshots",
+            sql: r#"
 CREATE TABLE IF NOT EXISTS transfer_snapshots (
   transfer_id TEXT PRIMARY KEY NOT NULL,
   kind TEXT NOT NULL,
@@ -63,8 +65,18 @@ CREATE TABLE IF NOT EXISTS transfer_snapshots (
 CREATE INDEX IF NOT EXISTS idx_transfer_snapshots_active
   ON transfer_snapshots(lifecycle_state, updated_at_ms DESC);
         "#,
-        kind: MigrationKind::Up,
-    }]
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "add_last_fail_reason",
+            sql: r#"
+ALTER TABLE transfer_snapshots
+ADD COLUMN last_fail_reason TEXT;
+            "#,
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 pub fn init(app: &tauri::AppHandle) -> SpResult<()> {
@@ -83,6 +95,10 @@ pub fn upsert_snapshot(snapshot: &TransferSnapshot) -> SpResult<()> {
     let bytes_done = u64_to_i64(snapshot.bytes_done)?;
     let rate_bps = u64_to_i64(snapshot.rate_bps)?;
     let phase = snapshot.phase.map(|value| value.as_str().to_string());
+    let last_fail_reason = snapshot
+        .last_fail_reason
+        .as_ref()
+        .map(|value| value.as_str().to_string());
     let query = r#"
 INSERT INTO transfer_snapshots (
   transfer_id,
@@ -94,6 +110,7 @@ INSERT INTO transfer_snapshots (
   bytes_done,
   rate_bps,
   last_error_json,
+  last_fail_reason,
   dest_path,
   android_tree_uri,
   android_relative_path,
@@ -103,7 +120,7 @@ INSERT INTO transfer_snapshots (
   created_at_ms,
   updated_at_ms
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(transfer_id) DO UPDATE SET
   kind = excluded.kind,
   key = excluded.key,
@@ -113,6 +130,7 @@ ON CONFLICT(transfer_id) DO UPDATE SET
   bytes_done = excluded.bytes_done,
   rate_bps = excluded.rate_bps,
   last_error_json = excluded.last_error_json,
+  last_fail_reason = excluded.last_fail_reason,
   dest_path = excluded.dest_path,
   android_tree_uri = excluded.android_tree_uri,
   android_relative_path = excluded.android_relative_path,
@@ -134,6 +152,7 @@ ON CONFLICT(transfer_id) DO UPDATE SET
             .bind(bytes_done)
             .bind(rate_bps)
             .bind(last_error_json)
+            .bind(last_fail_reason)
             .bind(snapshot.dest_path.clone())
             .bind(snapshot.android_tree_uri.clone())
             .bind(snapshot.android_relative_path.clone())
@@ -165,6 +184,7 @@ SELECT
   bytes_done,
   rate_bps,
   last_error_json,
+  last_fail_reason,
   dest_path,
   android_tree_uri,
   android_relative_path,
@@ -186,9 +206,36 @@ WHERE transfer_id = ?
 }
 
 pub fn list_active_snapshots() -> SpResult<Vec<TransferSnapshot>> {
+    list_snapshots_with_clause("WHERE lifecycle_state NOT IN ('completed', 'failed', 'cancelled')")
+}
+
+pub fn list_all_snapshots() -> SpResult<Vec<TransferSnapshot>> {
+    list_snapshots_with_clause("")
+}
+
+pub fn delete_snapshot(transfer_id: &str) -> SpResult<()> {
+    let transfer_id = transfer_id.to_string();
     run_db(async move {
         let pool = load_pool().await?;
-        let rows = sqlx::query(
+        sqlx::query(
+            r#"
+DELETE FROM transfer_snapshots
+WHERE transfer_id = ?
+            "#,
+        )
+        .bind(transfer_id)
+        .execute(&pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    })
+}
+
+fn list_snapshots_with_clause(clause: &str) -> SpResult<Vec<TransferSnapshot>> {
+    let clause = clause.to_string();
+    run_db(async move {
+        let pool = load_pool().await?;
+        let query = format!(
             r#"
 SELECT
   transfer_id,
@@ -200,6 +247,7 @@ SELECT
   bytes_done,
   rate_bps,
   last_error_json,
+  last_fail_reason,
   dest_path,
   android_tree_uri,
   android_relative_path,
@@ -209,13 +257,11 @@ SELECT
   created_at_ms,
   updated_at_ms
 FROM transfer_snapshots
-WHERE lifecycle_state NOT IN ('completed', 'failed', 'cancelled')
+{clause}
 ORDER BY updated_at_ms DESC
-            "#,
-        )
-        .fetch_all(&pool)
-        .await
-        .map_err(db_err)?;
+            "#
+        );
+        let rows = sqlx::query(&query).fetch_all(&pool).await.map_err(db_err)?;
         rows.into_iter().map(row_to_snapshot).collect()
     })
 }
@@ -223,6 +269,7 @@ ORDER BY updated_at_ms DESC
 fn row_to_snapshot(row: sqlx::sqlite::SqliteRow) -> SpResult<TransferSnapshot> {
     let phase: Option<String> = row.try_get("phase").map_err(db_err)?;
     let last_error_json: Option<String> = row.try_get("last_error_json").map_err(db_err)?;
+    let last_fail_reason: Option<String> = row.try_get("last_fail_reason").map_err(db_err)?;
     let last_error = last_error_json
         .as_deref()
         .map(serde_json::from_str::<SpError>)
@@ -245,6 +292,10 @@ fn row_to_snapshot(row: sqlx::sqlite::SqliteRow) -> SpResult<TransferSnapshot> {
         bytes_done: i64_to_u64(row.try_get("bytes_done").map_err(db_err)?)?,
         rate_bps: i64_to_u64(row.try_get("rate_bps").map_err(db_err)?)?,
         last_error,
+        last_fail_reason: last_fail_reason
+            .as_deref()
+            .map(ErrorKind::from_str)
+            .transpose()?,
         dest_path: row.try_get("dest_path").map_err(db_err)?,
         android_tree_uri: row.try_get("android_tree_uri").map_err(db_err)?,
         android_relative_path: row.try_get("android_relative_path").map_err(db_err)?,

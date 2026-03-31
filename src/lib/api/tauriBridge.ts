@@ -240,6 +240,8 @@ export const api = {
     }>("download_status", { transferId }),
   transfer_list_active: () =>
     invokeBridge<TransferSnapshot[]>("transfer_list_active"),
+  transfer_remove: (transferId: string, kind: "upload" | "download") =>
+    invokeBridge<void>("transfer_remove", { transferId, kind }),
   download_sandbox_dir: () => invokeBridge<string>("download_sandbox_dir"),
   usage_merge_day: (date: string) =>
     invokeBridge<DailyLedger>("usage_merge_day", { date }),

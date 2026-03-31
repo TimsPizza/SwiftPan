@@ -13,6 +13,8 @@ use std::sync::{
     Arc, Mutex,
 };
 use tauri::Emitter;
+#[cfg(target_os = "android")]
+use tauri_plugin_android_fs::{AndroidFsExt as _, FileUri, PersistableAccessMode};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +263,30 @@ fn part_path_for(temp_path: &Path) -> PathBuf {
     temp_path.with_extension("part")
 }
 
+fn last_fail_reason_for(
+    lifecycle_state: TransferLifecycle,
+    last_error: Option<&SpError>,
+) -> Option<ErrorKind> {
+    if !matches!(lifecycle_state, TransferLifecycle::Failed) {
+        return None;
+    }
+    last_error.map(|error| error.kind.clone())
+}
+
+fn should_keep_failed_artifacts(reason: Option<&ErrorKind>) -> bool {
+    matches!(reason, Some(ErrorKind::RetryableNet))
+}
+
+async fn cleanup_download_artifacts(temp_path: &Path) {
+    let _ = tokio::fs::remove_file(part_path_for(temp_path)).await;
+    let _ = tokio::fs::remove_file(temp_path).await;
+}
+
+fn cleanup_download_artifacts_sync(temp_path: &Path) {
+    let _ = std::fs::remove_file(part_path_for(temp_path));
+    let _ = std::fs::remove_file(temp_path);
+}
+
 fn snapshot_from_transfer(id: &str, transfer: &Transfer) -> TransferSnapshot {
     let (dest_path, android_tree_uri, android_relative_path) = transfer.target.snapshot_fields();
     TransferSnapshot {
@@ -273,6 +299,10 @@ fn snapshot_from_transfer(id: &str, transfer: &Transfer) -> TransferSnapshot {
         bytes_done: transfer.bytes_done,
         rate_bps: 0,
         last_error: transfer.last_error.clone(),
+        last_fail_reason: last_fail_reason_for(
+            transfer.lifecycle_state.clone(),
+            transfer.last_error.as_ref(),
+        ),
         dest_path,
         android_tree_uri,
         android_relative_path,
@@ -405,6 +435,43 @@ fn load_runtime_fields(
     ))
 }
 
+fn ensure_resume_target_access(_app: &tauri::AppHandle, _target: &DownloadTarget) -> SpResult<()> {
+    #[cfg(target_os = "android")]
+    {
+        if let DownloadTarget::AndroidTree { tree_uri, .. } = _target {
+            let api = _app.android_fs();
+            let uri = FileUri::from_str(tree_uri).map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("tree uri parse: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: now_ms(),
+            })?;
+            let has_permission = api
+                .check_persisted_uri_permission(&uri, PersistableAccessMode::ReadAndWrite)
+                .map_err(|e| SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: format!("check persisted SAF permission: {e}"),
+                    retry_after_ms: None,
+                    context: None,
+                    at: now_ms(),
+                })?;
+            if !has_permission {
+                return Err(SpError {
+                    kind: ErrorKind::NotRetriable,
+                    message: "android download directory permission lost; choose directory again"
+                        .into(),
+                    retry_after_ms: None,
+                    context: None,
+                    at: now_ms(),
+                });
+            }
+        }
+    }
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
 fn download_status_from_snapshot(snapshot: TransferSnapshot) -> DownloadStatus {
     DownloadStatus {
         transfer_id: snapshot.transfer_id,
@@ -428,6 +495,7 @@ fn spawn_download_task(app: tauri::AppHandle, transfer_id: String, recovered: bo
     tokio::spawn(async move {
         let res = run_download(&app, &transfer_id, recovered).await;
         if let Err(e) = res {
+            let cleanup_reason = e.kind.clone();
             let _ = mutate_transfer(&transfer_id, |t| {
                 t.worker_active = false;
                 t.last_error = Some(e.clone());
@@ -435,6 +503,13 @@ fn spawn_download_task(app: tauri::AppHandle, transfer_id: String, recovered: bo
             match e.kind {
                 ErrorKind::Cancelled => {}
                 _ => {
+                    if !should_keep_failed_artifacts(Some(&cleanup_reason)) {
+                        if let Ok((_, _, temp_path, _, _, _, _, _)) =
+                            load_runtime_fields(&transfer_id)
+                        {
+                            cleanup_download_artifacts(&temp_path).await;
+                        }
+                    }
                     let _ = transition_transfer(&transfer_id, TransferStateEvent::Fail);
                     emit_download(
                         &app,
@@ -455,6 +530,20 @@ fn spawn_download_task(app: tauri::AppHandle, transfer_id: String, recovered: bo
 
 pub fn init(app: &tauri::AppHandle) -> SpResult<()> {
     transfer_db::init(app)?;
+    for snapshot in transfer_db::list_all_snapshots()? {
+        if snapshot.kind != TransferKind::Download {
+            continue;
+        }
+        if !matches!(snapshot.lifecycle_state, TransferLifecycle::Failed) {
+            continue;
+        }
+        if should_keep_failed_artifacts(snapshot.last_fail_reason.as_ref()) {
+            continue;
+        }
+        if let Some(temp_path) = snapshot.temp_path.as_deref() {
+            cleanup_download_artifacts_sync(Path::new(temp_path));
+        }
+    }
     let snapshots = transfer_db::list_active_snapshots()?;
     for snapshot in snapshots {
         if snapshot.kind != TransferKind::Download {
@@ -466,10 +555,13 @@ pub fn init(app: &tauri::AppHandle) -> SpResult<()> {
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or(target.temp_path_for(&snapshot.transfer_id, &snapshot.key)?);
-        let paused = Arc::new(AtomicBool::new(matches!(
+        let pause_on_recover = matches!(
             snapshot.lifecycle_state,
-            TransferLifecycle::Paused
-        )));
+            TransferLifecycle::Queued | TransferLifecycle::Running
+        );
+        let paused = Arc::new(AtomicBool::new(
+            matches!(snapshot.lifecycle_state, TransferLifecycle::Paused) || pause_on_recover,
+        ));
         let cancelled = Arc::new(AtomicBool::new(false));
         {
             let mut g = DL.lock().map_err(|_| SpError {
@@ -502,6 +594,8 @@ pub fn init(app: &tauri::AppHandle) -> SpResult<()> {
                         TransferLifecycle::Cancelling
                     ) {
                         TransferLifecycle::Cancelled
+                    } else if pause_on_recover {
+                        TransferLifecycle::Paused
                     } else {
                         snapshot.lifecycle_state.clone()
                     },
@@ -512,11 +606,19 @@ pub fn init(app: &tauri::AppHandle) -> SpResult<()> {
             );
         }
         if matches!(snapshot.lifecycle_state, TransferLifecycle::Paused) {
-            let _ = persist_transfer(&snapshot.transfer_id);
+            continue;
+        }
+        if pause_on_recover {
+            crate::logger::warn(
+                "download",
+                &format!(
+                    "recovered interrupted download {} as paused; explicit resume required",
+                    snapshot.transfer_id
+                ),
+            );
             continue;
         }
         if matches!(snapshot.lifecycle_state, TransferLifecycle::Cancelling) {
-            let _ = persist_transfer(&snapshot.transfer_id);
             continue;
         }
         if !snapshot.lifecycle_state.is_terminal() {
@@ -971,6 +1073,24 @@ pub fn resume(app: &tauri::AppHandle, transfer_id: &str) -> SpResult<()> {
         t.phase
             .ok_or_else(|| err_invalid("paused download missing phase"))?
     };
+    let target = {
+        let g = DL.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "download state lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: now_ms(),
+        })?;
+        let t = g.get(transfer_id).ok_or_else(|| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "not found".into(),
+            retry_after_ms: None,
+            context: None,
+            at: now_ms(),
+        })?;
+        t.target.clone()
+    };
+    ensure_resume_target_access(app, &target)?;
     transition_transfer(transfer_id, TransferStateEvent::Run(phase))?;
     emit_download(
         app,
@@ -1036,5 +1156,80 @@ pub fn status(transfer_id: &str) -> SpResult<DownloadStatus> {
 }
 
 pub fn list_active_snapshots() -> SpResult<Vec<TransferSnapshot>> {
-    transfer_db::list_active_snapshots()
+    let persisted = transfer_db::list_active_snapshots()?;
+    let runtime = {
+        let g = DL.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "download state lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: now_ms(),
+        })?;
+        g.iter()
+            .filter_map(|(id, t)| {
+                if t.lifecycle_state.is_terminal() {
+                    return None;
+                }
+                Some(snapshot_from_transfer(id, t))
+            })
+            .collect::<Vec<_>>()
+    };
+    if runtime.is_empty() {
+        return Ok(persisted);
+    }
+    let mut merged = std::collections::HashMap::new();
+    for snapshot in persisted {
+        merged.insert(snapshot.transfer_id.clone(), snapshot);
+    }
+    for snapshot in runtime {
+        merged.insert(snapshot.transfer_id.clone(), snapshot);
+    }
+    let mut items = merged.into_values().collect::<Vec<_>>();
+    items.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    Ok(items)
+}
+
+pub fn list_snapshots() -> SpResult<Vec<TransferSnapshot>> {
+    let persisted = transfer_db::list_all_snapshots()?;
+    let runtime = {
+        let g = DL.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "download state lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: now_ms(),
+        })?;
+        g.iter()
+            .map(|(id, t)| snapshot_from_transfer(id, t))
+            .collect::<Vec<_>>()
+    };
+    let mut merged = std::collections::HashMap::new();
+    for snapshot in persisted {
+        merged.insert(snapshot.transfer_id.clone(), snapshot);
+    }
+    for snapshot in runtime {
+        merged.insert(snapshot.transfer_id.clone(), snapshot);
+    }
+    let mut items = merged.into_values().collect::<Vec<_>>();
+    items.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    Ok(items)
+}
+
+pub fn remove(transfer_id: &str) -> SpResult<()> {
+    {
+        let mut g = DL.lock().map_err(|_| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "download state lock poisoned".into(),
+            retry_after_ms: None,
+            context: None,
+            at: now_ms(),
+        })?;
+        if let Some(t) = g.get(transfer_id) {
+            if !t.lifecycle_state.is_terminal() {
+                return Err(err_invalid("cannot remove active download"));
+            }
+        }
+        g.remove(transfer_id);
+    }
+    transfer_db::delete_snapshot(transfer_id)
 }

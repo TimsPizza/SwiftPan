@@ -106,6 +106,15 @@ export type DownloadStatus = {
   temp_path?: string;
   last_error?: SpError;
 };
+export type ErrorKind =
+  | "cancelled"
+  | "retryable_net"
+  | "retryable_auth"
+  | "not_retriable"
+  | "source_changed"
+  | "disk_full"
+  | "task_exists"
+  | "not_implemented";
 export type TransferSnapshot = {
   transfer_id: string;
   kind: "upload" | "download";
@@ -116,6 +125,7 @@ export type TransferSnapshot = {
   bytes_done: number;
   rate_bps: number;
   last_error?: SpError;
+  last_fail_reason?: ErrorKind;
   dest_path?: string;
   android_tree_uri?: string;
   android_relative_path?: string;

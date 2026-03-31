@@ -772,10 +772,19 @@ pub async fn download_status(transfer_id: String) -> SpResult<DownloadStatus> {
 
 #[tauri::command]
 pub async fn transfer_list_active() -> SpResult<Vec<TransferSnapshot>> {
-    let mut items = crate::download::list_active_snapshots()?;
+    let mut items = crate::download::list_snapshots()?;
     items.extend(crate::upload::list_active_snapshots());
     items.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
     Ok(items)
+}
+
+#[tauri::command]
+pub async fn transfer_remove(transfer_id: String, kind: String) -> SpResult<()> {
+    match kind.as_str() {
+        "download" => crate::download::remove(&transfer_id),
+        "upload" => crate::upload::remove(&transfer_id),
+        _ => Err(err_invalid("invalid transfer kind")),
+    }
 }
 
 // Expose an app sandbox downloads directory for staged downloads

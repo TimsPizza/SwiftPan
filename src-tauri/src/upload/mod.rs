@@ -176,6 +176,11 @@ fn snapshot_from_upload(id: &str, transfer: &UTransfer) -> TransferSnapshot {
         bytes_done: transfer.bytes_done,
         rate_bps: 0,
         last_error: transfer.last_error.clone(),
+        last_fail_reason: if matches!(transfer.lifecycle_state, TransferLifecycle::Failed) {
+            transfer.last_error.as_ref().map(|error| error.kind.clone())
+        } else {
+            None
+        },
         dest_path: None,
         android_tree_uri: None,
         android_relative_path: None,
@@ -1151,4 +1156,21 @@ pub fn list_active_snapshots() -> Vec<TransferSnapshot> {
             Some(snapshot_from_upload(id, t))
         })
         .collect()
+}
+
+pub fn remove(id: &str) -> SpResult<()> {
+    let mut g = UL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: now_ms(),
+    })?;
+    if let Some(t) = g.get(id) {
+        if !t.lifecycle_state.is_terminal() {
+            return Err(err_invalid("cannot remove active upload"));
+        }
+    }
+    g.remove(id);
+    Ok(())
 }

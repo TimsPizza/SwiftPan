@@ -248,6 +248,7 @@ pub fn apply_transfer_event(
                 lifecycle: TransferLifecycle::Paused,
                 phase: current.phase,
             }),
+            TransferLifecycle::Paused => Ok(current.clone()),
             _ => Err(err_invalid(
                 "pause transition not allowed from current state",
             )),
