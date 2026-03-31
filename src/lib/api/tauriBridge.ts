@@ -10,6 +10,7 @@ import type {
   CredentialExportPayload,
   DailyLedger,
   ShareLink,
+  TransferSnapshot,
   UploadStatus,
 } from "./bridge";
 
@@ -200,9 +201,12 @@ export const api = {
     invokeBridge<UploadStatus>("upload_status", { transferId }),
   download_new: (params: {
     key: string;
-    dest_path: string;
+    dest_path?: string;
     chunk_size: number;
     expected_etag?: string;
+    android_tree_uri?: string;
+    android_relative_path?: string;
+    mime?: string;
   }) => invokeBridge<string>("download_new", { params }),
   download_ctrl: (transferId: string, action: "pause" | "resume" | "cancel") =>
     invokeBridge<void>("download_ctrl", { transferId, action }),
@@ -210,13 +214,32 @@ export const api = {
     invokeBridge<{
       transfer_id: string;
       key: string;
+      lifecycle_state:
+        | "queued"
+        | "running"
+        | "paused"
+        | "cancelling"
+        | "completed"
+        | "failed"
+        | "cancelled";
+      phase?:
+        | "preparing_source"
+        | "uploading_remote"
+        | "finalizing_remote"
+        | "preparing_target"
+        | "downloading_remote"
+        | "materializing_target"
+        | "cleaning_up";
       bytes_total?: number;
       bytes_done: number;
       rate_bps: number;
       expected_etag?: string;
       observed_etag?: string;
+      temp_path?: string;
       last_error?: unknown;
     }>("download_status", { transferId }),
+  transfer_list_active: () =>
+    invokeBridge<TransferSnapshot[]>("transfer_list_active"),
   download_sandbox_dir: () => invokeBridge<string>("download_sandbox_dir"),
   usage_merge_day: (date: string) =>
     invokeBridge<DailyLedger>("usage_merge_day", { date }),
@@ -276,9 +299,14 @@ export const api = {
   }) => invokeBridge<void>("android_fs_copy", { params }),
   // Android uploads via SAF (native; avoids JS streaming)
   android_pick_upload_files: () =>
-    invokeBridge<Array<{ uri: string; name: string; size?: number }>>(
-      "android_pick_upload_files",
-    ),
+    invokeBridge<
+      Array<{
+        uri: string;
+        displayName: string;
+        size?: number;
+        mimeType?: string;
+      }>
+    >("android_pick_upload_files"),
   android_upload_from_uri: (params: {
     key: string;
     uri: string;

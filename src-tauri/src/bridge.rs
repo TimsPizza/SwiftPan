@@ -4,6 +4,7 @@ use crate::share::{ShareLink, ShareParams};
 use crate::sp_backend::{
     BackendPackage, BackendState as BackendStatus, CredentialBundle, SpBackend,
 };
+use crate::transfer_db::TransferSnapshot;
 use crate::types::*;
 use crate::upload::{NewUploadParams, NewUploadStreamParams, UploadStatus};
 use base64::Engine;
@@ -604,7 +605,7 @@ pub async fn android_pick_upload_files(app: tauri::AppHandle) -> SpResult<Vec<se
         let picker = api.file_picker();
         let mut out: Vec<serde_json::Value> = Vec::new();
 
-        // Helpers: extract actual content URI from FileUri.to_string JSON, and derive a display name
+        // Helper: extract actual content URI from FileUri.to_string JSON
         fn extract_uri(s: &str) -> String {
             let t = s.trim();
             if t.starts_with('{') {
@@ -616,36 +617,6 @@ pub async fn android_pick_upload_files(app: tauri::AppHandle) -> SpResult<Vec<se
             }
             s.to_string()
         }
-        fn pct_hex(n: u8) -> Option<u8> {
-            match n {
-                b'0'..=b'9' => Some(n - b'0'),
-                b'a'..=b'f' => Some(10 + (n - b'a')),
-                b'A'..=b'F' => Some(10 + (n - b'A')),
-                _ => None,
-            }
-        }
-        fn percent_decode(s: &str) -> String {
-            let b = s.as_bytes();
-            let mut i = 0usize;
-            let mut out = Vec::with_capacity(b.len());
-            while i < b.len() {
-                if b[i] == b'%' && i + 2 < b.len() {
-                    if let (Some(h), Some(l)) = (pct_hex(b[i + 1]), pct_hex(b[i + 2])) {
-                        out.push((h << 4) | l);
-                        i += 3;
-                        continue;
-                    }
-                }
-                out.push(b[i]);
-                i += 1;
-            }
-            String::from_utf8_lossy(&out).to_string()
-        }
-        fn derive_name_from_uri(u: &str) -> String {
-            let actual = percent_decode(u);
-            let last = actual.rsplit('/').next().unwrap_or(&actual);
-            last.to_string()
-        }
 
         // Try multi-select first (allow all MIME types)
         match picker.pick_files(None, &[]) {
@@ -656,8 +627,17 @@ pub async fn android_pick_upload_files(app: tauri::AppHandle) -> SpResult<Vec<se
                         Err(_) => continue,
                     };
                     let uri = extract_uri(&raw);
-                    let name = derive_name_from_uri(&uri);
-                    out.push(serde_json::json!({ "uri": uri, "name": name }));
+                    let display_name = api
+                        .get_name(&f)
+                        .unwrap_or_else(|_| "upload.bin".to_string());
+                    let size = api.get_metadata(&f).ok().map(|meta| meta.len());
+                    let mime_type = api.get_mime_type(&f).ok();
+                    out.push(serde_json::json!({
+                        "uri": uri,
+                        "displayName": display_name,
+                        "size": size,
+                        "mimeType": mime_type
+                    }));
                 }
                 if !out.is_empty() {
                     return Ok(out);
@@ -683,8 +663,17 @@ pub async fn android_pick_upload_files(app: tauri::AppHandle) -> SpResult<Vec<se
                 at: chrono::Utc::now().timestamp_millis(),
             })?;
             let uri = extract_uri(&raw);
-            let name = derive_name_from_uri(&uri);
-            out.push(serde_json::json!({ "uri": uri, "name": name }));
+            let display_name = api
+                .get_name(&f)
+                .unwrap_or_else(|_| "upload.bin".to_string());
+            let size = api.get_metadata(&f).ok().map(|meta| meta.len());
+            let mime_type = api.get_mime_type(&f).ok();
+            out.push(serde_json::json!({
+                "uri": uri,
+                "displayName": display_name,
+                "size": size,
+                "mimeType": mime_type
+            }));
         }
         return Ok(out);
     }
@@ -729,11 +718,21 @@ pub async fn android_upload_from_uri(
 
 #[tauri::command]
 pub async fn download_new(app: tauri::AppHandle, params: NewDownloadParams) -> SpResult<String> {
+    let target = if let Some(dest_path) = params.dest_path.as_deref() {
+        format!("dest={dest_path}")
+    } else if let (Some(tree_uri), Some(relative_path)) = (
+        params.android_tree_uri.as_deref(),
+        params.android_relative_path.as_deref(),
+    ) {
+        format!("tree={} rel={}", tree_uri, relative_path)
+    } else {
+        "target=invalid".to_string()
+    };
     crate::logger::info(
         "bridge",
         &format!(
-            "download_new key={} chunk={} dest={}",
-            params.key, params.chunk_size, params.dest_path
+            "download_new key={} chunk={} {}",
+            params.key, params.chunk_size, target
         ),
     );
     let r = crate::download::start_download(app, params).await;
@@ -769,6 +768,14 @@ pub async fn download_ctrl(
 #[tauri::command]
 pub async fn download_status(transfer_id: String) -> SpResult<DownloadStatus> {
     crate::download::status(&transfer_id)
+}
+
+#[tauri::command]
+pub async fn transfer_list_active() -> SpResult<Vec<TransferSnapshot>> {
+    let mut items = crate::download::list_active_snapshots()?;
+    items.extend(crate::upload::list_active_snapshots());
+    items.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    Ok(items)
 }
 
 // Expose an app sandbox downloads directory for staged downloads

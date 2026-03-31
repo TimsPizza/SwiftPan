@@ -88,6 +88,7 @@ export default function TransfersPage() {
                       <div className="text-muted-foreground mt-0.5 text-[11px]">
                         {t.type} · {t.state} · {formatBytes(t.bytesDone)}
                         {t.bytesTotal ? ` / ${formatBytes(t.bytesTotal)}` : ""}
+                        {t.phase ? ` · ${t.phase}` : ""}
                       </div>
                       <div className="mt-1">
                         <Progress value={pct} />
@@ -113,7 +114,9 @@ export default function TransfersPage() {
                           Resume
                         </Button>
                       ) : null}
-                      {(t.state === "running" || t.state === "paused") && (
+                      {(t.state === "queued" ||
+                        t.state === "running" ||
+                        t.state === "paused") && (
                         <Button
                           size="sm"
                           variant="ghost"

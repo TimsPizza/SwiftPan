@@ -44,6 +44,8 @@ export type NewUploadParams = {
 export type UploadStatus = {
   transfer_id: string;
   key: string;
+  lifecycle_state: TransferLifecycle;
+  phase?: TransferPhase;
   bytes_total: number;
   bytes_done: number;
   parts_completed: number;
@@ -61,24 +63,67 @@ export type UploadEvent =
   | { type: "PartDone"; transfer_id: string; part_number: number; etag: string }
   | { type: "Paused"; transfer_id: string }
   | { type: "Resumed"; transfer_id: string }
+  | { type: "Cancelling"; transfer_id: string }
   | { type: "Completed"; transfer_id: string }
-  | { type: "Failed"; transfer_id: string; error: SpError };
+  | { type: "Failed"; transfer_id: string; error: SpError }
+  | { type: "Cancelled"; transfer_id: string };
 
 export type NewDownloadParams = {
   key: string;
-  dest_path: string;
+  dest_path?: string;
   chunk_size: number;
   expected_etag?: string;
+  android_tree_uri?: string;
+  android_relative_path?: string;
+  mime?: string;
 };
+export type TransferLifecycle =
+  | "queued"
+  | "running"
+  | "paused"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled";
+export type TransferPhase =
+  | "preparing_source"
+  | "uploading_remote"
+  | "finalizing_remote"
+  | "preparing_target"
+  | "downloading_remote"
+  | "materializing_target"
+  | "cleaning_up";
 export type DownloadStatus = {
   transfer_id: string;
   key: string;
+  lifecycle_state: TransferLifecycle;
+  phase?: TransferPhase;
   bytes_total?: number;
   bytes_done: number;
   rate_bps: number;
   expected_etag?: string;
   observed_etag?: string;
+  temp_path?: string;
   last_error?: SpError;
+};
+export type TransferSnapshot = {
+  transfer_id: string;
+  kind: "upload" | "download";
+  key: string;
+  lifecycle_state: TransferLifecycle;
+  phase?: TransferPhase;
+  bytes_total?: number;
+  bytes_done: number;
+  rate_bps: number;
+  last_error?: SpError;
+  dest_path?: string;
+  android_tree_uri?: string;
+  android_relative_path?: string;
+  temp_path?: string;
+  expected_etag?: string;
+  observed_etag?: string;
+  created_at_ms: number;
+  updated_at_ms: number;
 };
 export type DownloadEvent =
   | { type: "Started"; transfer_id: string }
@@ -90,8 +135,10 @@ export type DownloadEvent =
   | { type: "ChunkDone"; transfer_id: string; range_start: number; len: number }
   | { type: "Paused"; transfer_id: string }
   | { type: "Resumed"; transfer_id: string }
+  | { type: "Cancelling"; transfer_id: string }
   | { type: "Completed"; transfer_id: string }
   | { type: "Failed"; transfer_id: string; error: SpError }
+  | { type: "Cancelled"; transfer_id: string }
   | { type: "SourceChanged"; transfer_id: string };
 
 export type ShareParams = {

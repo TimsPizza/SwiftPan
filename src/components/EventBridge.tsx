@@ -10,7 +10,6 @@ import { queryClient } from "@/main";
 import { useAppStore } from "@/store/app-store";
 import { useLogStore } from "@/store/log-store";
 import { useTransferStore } from "@/store/transfer-store";
-import { open, remove } from "@tauri-apps/plugin-fs";
 import {
   createChannel,
   Importance,
@@ -25,46 +24,6 @@ import { useEffect } from "react";
 import { toast } from "sonner";
 
 type TransferKind = "upload" | "download";
-
-type ActiveRegistry = Record<string, TransferKind>;
-
-const REG_KEY = "sp.activeTransfers.v1";
-
-function loadRegistry(): ActiveRegistry {
-  try {
-    const raw = localStorage.getItem(REG_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") return parsed as ActiveRegistry;
-  } catch {
-    // ignore
-  }
-  return {};
-}
-
-function saveRegistry(map: ActiveRegistry) {
-  try {
-    localStorage.setItem(REG_KEY, JSON.stringify(map));
-  } catch {
-    // ignore
-  }
-}
-
-function registerActive(id: string, kind: TransferKind) {
-  const map = loadRegistry();
-  if (map[id] !== kind) {
-    map[id] = kind;
-    saveRegistry(map);
-  }
-}
-
-function unregisterActive(id: string) {
-  const map = loadRegistry();
-  if (id in map) {
-    delete map[id];
-    saveRegistry(map);
-  }
-}
 
 const isAndroidDevice =
   typeof navigator !== "undefined" &&
@@ -376,10 +335,7 @@ async function refreshUploadStatus(id: string) {
   try {
     const status = await api.upload_status(id);
     if (!status) {
-      useTransferStore
-        .getState()
-        .update(id, { state: "failed", error: "status not found" });
-      unregisterActive(id);
+      useTransferStore.getState().remove(id);
       triggerAggregateUpdate(true);
       return;
     }
@@ -389,18 +345,22 @@ async function refreshUploadStatus(id: string) {
       id,
       type: "upload",
       key: status.key,
+      phase: status.phase,
       bytesTotal: status.bytes_total,
       bytesDone: status.bytes_done,
       rateBps: status.rate_bps ?? 0,
+      state: status.lifecycle_state as any,
+      error: status.last_error
+        ? String(
+            (status.last_error as any).message ||
+              (status.last_error as any).kind ||
+              "upload failed",
+          )
+        : undefined,
     });
     triggerAggregateUpdate();
   } catch (err: any) {
-    useTransferStore.getState().update(id, {
-      state: "failed",
-      error: String(err?.message ?? err ?? "status not found"),
-    });
-    unregisterActive(id);
-    triggerAggregateUpdate(true);
+    console.warn("upload_status failed", id, err);
   }
 }
 
@@ -408,10 +368,7 @@ async function refreshDownloadStatus(id: string) {
   try {
     const status = await api.download_status(id);
     if (!status) {
-      useTransferStore
-        .getState()
-        .update(id, { state: "failed", error: "status not found" });
-      unregisterActive(id);
+      useTransferStore.getState().remove(id);
       triggerAggregateUpdate(true);
       return;
     }
@@ -420,24 +377,28 @@ async function refreshDownloadStatus(id: string) {
       id,
       type: "download",
       key: status.key,
+      phase: status.phase,
       bytesTotal: status.bytes_total,
       bytesDone: status.bytes_done,
       rateBps: status.rate_bps ?? 0,
+      tempPath: status.temp_path,
+      state: status.lifecycle_state as any,
+      error: status.last_error
+        ? String(
+            (status.last_error as any).message ||
+              (status.last_error as any).kind ||
+              "download failed",
+          )
+        : undefined,
     });
     triggerAggregateUpdate();
   } catch (err: any) {
-    useTransferStore.getState().update(id, {
-      state: "failed",
-      error: String(err?.message ?? err ?? "status not found"),
-    });
-    unregisterActive(id);
-    triggerAggregateUpdate(true);
+    console.warn("download_status failed", id, err);
   }
 }
 
 function handleUploadEvent(ev: UploadEvent) {
   const id = ev.transfer_id;
-  const s = useTransferStore.getState();
   const keyOrName = () => {
     try {
       const item = useTransferStore.getState().items[id];
@@ -448,45 +409,32 @@ function handleUploadEvent(ev: UploadEvent) {
   };
   switch (ev.type) {
     case "Started": {
-      registerActive(id, "upload");
-      s.update(id, {
-        id,
-        type: "upload",
-        bytesDone: 0,
-        rateBps: 0,
-        state: "running",
-      });
-      // Defer heavy status fetch
       setTimeout(() => void refreshUploadStatus(id), 0);
       {
         const k = keyOrName();
         toast.info(k ? `Upload started: ${k}` : "Upload started");
         void notifyTransferEvent("upload", id, "Upload started", k ?? id);
       }
-      triggerAggregateUpdate(true);
       break;
     }
     case "Resumed": {
-      s.update(id, { state: "running" });
       setTimeout(() => void refreshUploadStatus(id), 0);
-      triggerAggregateUpdate(true);
       break;
     }
     case "Paused": {
-      s.update(id, { state: "paused" });
-      triggerAggregateUpdate(true);
+      setTimeout(() => void refreshUploadStatus(id), 0);
+      break;
+    }
+    case "Cancelling": {
+      setTimeout(() => void refreshUploadStatus(id), 0);
       break;
     }
     case "PartDone": {
-      // Keep status as source of truth
       setTimeout(() => void refreshUploadStatus(id), 0);
       break;
     }
     case "Completed": {
-      s.update(id, { state: "completed" });
-      unregisterActive(id);
       setTimeout(() => void refreshUploadStatus(id), 0);
-      // Show success toast; do not suppress on Android because upload hook doesn’t duplicate it
       {
         const k = keyOrName();
         toast.success(k ? `Upload completed: ${k}` : "Upload completed");
@@ -505,8 +453,6 @@ function handleUploadEvent(ev: UploadEvent) {
       break;
     }
     case "Failed": {
-      s.update(id, { state: "failed", error: ev.error?.message ?? "failed" });
-      unregisterActive(id);
       setTimeout(() => void refreshUploadStatus(id), 0);
       {
         const k = keyOrName();
@@ -521,7 +467,15 @@ function handleUploadEvent(ev: UploadEvent) {
           `${detail}${notifMsg}`,
         );
       }
-      triggerAggregateUpdate(true);
+      break;
+    }
+    case "Cancelled": {
+      setTimeout(() => void refreshUploadStatus(id), 0);
+      {
+        const k = keyOrName();
+        toast.info(k ? `Upload cancelled: ${k}` : "Upload cancelled");
+        void notifyTransferEvent("upload", id, "Upload cancelled", k ?? id);
+      }
       break;
     }
   }
@@ -529,10 +483,7 @@ function handleUploadEvent(ev: UploadEvent) {
 
 async function handleDownloadEvent(ev: DownloadEvent) {
   const id = ev.transfer_id;
-  const s = useTransferStore.getState();
   console.log("handleDownloadEvent", ev);
-  const ua = (globalThis as any)?.navigator?.userAgent || "";
-  const isAndroid = /Android/i.test(String(ua));
   const keyOrName = () => {
     try {
       const item = useTransferStore.getState().items[id];
@@ -543,94 +494,35 @@ async function handleDownloadEvent(ev: DownloadEvent) {
   };
   switch (ev.type) {
     case "Started": {
-      registerActive(id, "download");
-      s.update(id, {
-        id,
-        type: "download",
-        bytesDone: 0,
-        rateBps: 0,
-        state: "running",
-      });
       setTimeout(() => void refreshDownloadStatus(id), 0);
       {
         const k = keyOrName();
         toast.info(k ? `Download started: ${k}` : "Download started");
         void notifyTransferEvent("download", id, "Download started", k ?? id);
       }
-      triggerAggregateUpdate(true);
       break;
     }
     case "Resumed": {
-      s.update(id, { state: "running" });
       setTimeout(() => void refreshDownloadStatus(id), 0);
-      triggerAggregateUpdate(true);
       break;
     }
     case "Paused": {
-      s.update(id, { state: "paused" });
-      triggerAggregateUpdate(true);
+      setTimeout(() => void refreshDownloadStatus(id), 0);
+      break;
+    }
+    case "Cancelling": {
+      setTimeout(() => void refreshDownloadStatus(id), 0);
       break;
     }
     case "ChunkDone": {
       setTimeout(() => void refreshDownloadStatus(id), 0);
-      triggerAggregateUpdate();
       break;
     }
     case "Completed": {
-      s.update(id, { state: "completed" });
-      // Post-process: if this download has a tempPath and final destPath, move/copy it now
-      try {
-        const item = useTransferStore.getState().items[id];
-        const src = item?.tempPath;
-        const dst = item?.destPath;
-        if (src && dst) {
-          console.log("copying from: ", src, "to: ", dst);
-          const srcF = await open(src, { read: true });
-          const dstF = await open(dst, {
-            write: true,
-            create: true,
-            truncate: true,
-          });
-
-          const buf = new Uint8Array(1024 * 1024);
-          let off = 0;
-          let totalW = 0;
-          console.log("stream copying, buffer length", buf.length);
-          for (;;) {
-            const read = await srcF.read(buf);
-            if (read === null) break;
-            await dstF.write(buf.subarray(0, read));
-            off += read;
-            totalW += read;
-          }
-          console.log("stream copying, off", off);
-          // Some providers require explicit truncate to finalize size metadata
-          try {
-            await dstF.truncate(off);
-          } catch {}
-          await srcF.close();
-          console.log("stream copying, srcF closed");
-          await dstF.close();
-          console.log("stream copying, dstF closed");
-
-          // best-effort cleanup of sandbox temp
-          try {
-            await remove(src);
-          } catch {}
-        }
-      } catch (e) {
-        console.error("post-download move failed", e);
-        s.update(id, { error: "move failed" });
-      }
-      unregisterActive(id);
       setTimeout(() => void refreshDownloadStatus(id), 0);
-      // Avoid duplicate success toasts on Android where mobile hook already shows one after SAF copy
-      if (!isAndroid) {
-        const k = keyOrName();
-        toast.success(k ? `Download completed: ${k}` : "Download completed");
-      }
+      const k = keyOrName();
+      toast.success(k ? `Download completed: ${k}` : "Download completed");
       {
-        const k = keyOrName();
         void notifyTransferEvent(
           "download",
           id,
@@ -644,12 +536,9 @@ async function handleDownloadEvent(ev: DownloadEvent) {
           },
         );
       }
-      triggerAggregateUpdate(true);
       break;
     }
     case "Failed": {
-      s.update(id, { state: "failed", error: ev.error?.message ?? "failed" });
-      unregisterActive(id);
       setTimeout(() => void refreshDownloadStatus(id), 0);
       {
         const k = keyOrName();
@@ -666,12 +555,19 @@ async function handleDownloadEvent(ev: DownloadEvent) {
           `${detail}${notifMsg}`,
         );
       }
-      triggerAggregateUpdate(true);
+      break;
+    }
+    case "Cancelled": {
+      setTimeout(() => void refreshDownloadStatus(id), 0);
+      {
+        const k = keyOrName();
+        toast.info(k ? `Download cancelled: ${k}` : "Download cancelled");
+        void notifyTransferEvent("download", id, "Download cancelled", k ?? id);
+      }
       break;
     }
     case "SourceChanged": {
-      s.update(id, { state: "failed", error: "SourceChanged" });
-      unregisterActive(id);
+      setTimeout(() => void refreshDownloadStatus(id), 0);
       {
         const k = keyOrName();
         void notifyTransferEvent(
@@ -681,7 +577,6 @@ async function handleDownloadEvent(ev: DownloadEvent) {
           `${k ?? id} · source changed`,
         );
       }
-      triggerAggregateUpdate(true);
       break;
     }
   }
@@ -765,34 +660,33 @@ async function ensureBridgeOnce() {
     }
   }
 
-  // Recover from persisted registry on startup
-  const reg = loadRegistry();
-  const entries = Object.entries(reg);
-  if (entries.length > 0) {
-    for (const [id, kind] of entries) {
-      if (kind === "upload") {
-        // Seed store as running/pending, then refresh
-        useTransferStore.getState().update(id, {
-          id,
-          type: "upload",
-          bytesDone: 0,
-          rateBps: 0,
-          state: "running",
-        });
-        // Best-effort status fetch
-        setTimeout(() => void refreshUploadStatus(id), 0);
-      } else {
-        useTransferStore.getState().update(id, {
-          id,
-          type: "download",
-          bytesDone: 0,
-          rateBps: 0,
-          state: "running",
-        });
-        setTimeout(() => void refreshDownloadStatus(id), 0);
-      }
+  try {
+    const active = await api.transfer_list_active();
+    for (const item of active || []) {
+      useTransferStore.getState().update(item.transfer_id, {
+        id: item.transfer_id,
+        type: item.kind,
+        key: item.key,
+        state: item.lifecycle_state as any,
+        phase: item.phase,
+        bytesTotal: item.bytes_total,
+        bytesDone: item.bytes_done,
+        rateBps: item.rate_bps ?? 0,
+        error: item.last_error?.message,
+        destPath: item.dest_path,
+        tempPath: item.temp_path,
+      });
+      setTimeout(
+        () =>
+          void (item.kind === "upload"
+            ? refreshUploadStatus(item.transfer_id)
+            : refreshDownloadStatus(item.transfer_id)),
+        0,
+      );
     }
     triggerAggregateUpdate(true);
+  } catch (err) {
+    console.warn("transfer_list_active failed", err);
   }
 
   // Seed logger status and initial tail once
@@ -825,17 +719,20 @@ async function ensureBridgeOnce() {
 
   // Poll active transfers periodically to stay in sync (idempotent)
   ctrl.poller = window.setInterval(async () => {
-    const active = loadRegistry();
-    const ids = Object.keys(active);
-    console.log("polling");
-    if (ids.length === 0) return;
+    const active = Object.values(useTransferStore.getState().items).filter(
+      (item) =>
+        item.state !== "completed" &&
+        item.state !== "failed" &&
+        item.state !== "cancelled",
+    );
+    if (active.length === 0) return;
     // Limit per tick to avoid bursts
-    const batch = ids.slice(0, 6);
+    const batch = active.slice(0, 6);
     await Promise.all(
-      batch.map((id) =>
-        active[id] === "upload"
-          ? refreshUploadStatus(id)
-          : refreshDownloadStatus(id),
+      batch.map((item) =>
+        item.type === "upload"
+          ? refreshUploadStatus(item.id)
+          : refreshDownloadStatus(item.id),
       ),
     );
   }, 1500);

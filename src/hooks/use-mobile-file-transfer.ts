@@ -3,7 +3,6 @@ import { api } from "@/lib/api/tauriBridge";
 import { useAppStore } from "@/store/app-store";
 import { useFilesStore } from "@/store/files-store";
 import { useTransferStore } from "@/store/transfer-store";
-import { remove } from "@tauri-apps/plugin-fs";
 import { useCallback } from "react";
 import { toast } from "sonner";
 
@@ -16,8 +15,7 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
 
   const pickUploads = useCallback(async () => {
     const isAndroid = /Android/i.test(navigator.userAgent || "");
-    const bucketKeys = new Set((files || []).map((f) => f.id));
-    const storeItems = useTransferStore.getState().items;
+    const existingObjectKeys = new Set((files || []).map((f) => f.id));
 
     if (isAndroid) {
       try {
@@ -27,15 +25,17 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
           return;
         }
         let started = 0;
+        const pendingObjectKeys = new Set(existingObjectKeys);
         for (const e of entries as any[]) {
-          const key = String(e.name || "upload.bin");
+          const key =
+            String(e.displayName || "upload.bin").trim() || "upload.bin";
           const uri = String(e.uri || "");
           if (!uri) continue;
-          if (bucketKeys.has(key)) {
+          if (pendingObjectKeys.has(key)) {
             toast.error(`File already exists: ${key}`);
             continue;
           }
-          const dup = Object.values(storeItems).some(
+          const dup = Object.values(useTransferStore.getState().items).some(
             (t) =>
               t.type === "upload" &&
               t.key === key &&
@@ -53,6 +53,7 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
               part_size: 8 * 1024 * 1024,
             });
             started += 1;
+            pendingObjectKeys.add(key);
             setTransfersOpen(true);
           } catch (err) {
             console.error(err);
@@ -80,13 +81,14 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
     input.onchange = async () => {
       const filesChosen = Array.from(input.files || []);
       if (filesChosen.length === 0) return;
+      const pendingObjectKeys = new Set(existingObjectKeys);
       for (const f of filesChosen) {
         const key = f.name;
-        if (bucketKeys.has(key)) {
+        if (pendingObjectKeys.has(key)) {
           toast.error(`File already exists: ${key}`);
           continue;
         }
-        const dup = Object.values(storeItems).some(
+        const dup = Object.values(useTransferStore.getState().items).some(
           (t) =>
             t.type === "upload" &&
             t.key === key &&
@@ -103,6 +105,7 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
             bytes_total: f.size,
             part_size: 8 * 1024 * 1024,
           });
+          pendingObjectKeys.add(key);
           setTransfersOpen(true);
           const CHUNK = 1024 * 1024 * 4;
           for (let offset = 0; offset < f.size; offset += CHUNK) {
@@ -122,28 +125,9 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
           toast.error(`Upload failed to start: ${key}`);
         }
       }
-      ``;
     };
     input.click();
   }, [files, setTransfersOpen]);
-
-  // Helper to wait for a download to finish via polling
-  const waitForDownloadComplete = async (id: string) => {
-    for (let i = 0; i < 600; i++) {
-      // up to ~60s
-      try {
-        const st = await api.download_status(id);
-        const s = st as any;
-        if (s && typeof s === "object") {
-          const total = Number((s as any).bytes_total || 0);
-          const done = Number((s as any).bytes_done || 0);
-          if (total > 0 && done >= total) return true;
-        }
-      } catch {}
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return false;
-  };
 
   const ensureTreeUri = useCallback(async (): Promise<string | null> => {
     if (androidTreeUri) return androidTreeUri;
@@ -178,36 +162,17 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
     async (file: File) => {
       const tree = await ensureTreeUri();
       if (!tree) return;
-      const sandboxDir = await api.download_sandbox_dir();
-      const base = String(sandboxDir || "");
-      if (!base) {
-        toast.error("No sandbox directory available");
-        return;
-      }
-      const sandboxPath = `${base.replace(/[\\/]$/, "")}/${file.id}`;
       try {
-        const id = await api.download_new({
+        await api.download_new({
           key: file.id,
-          dest_path: sandboxPath,
           chunk_size: 4 * 1024 * 1024,
+          android_tree_uri: tree,
+          android_relative_path: file.filename || `download_${file.id}`,
         });
         setTransfersOpen(true);
-        const ok = await waitForDownloadComplete(String(id));
-        if (!ok) throw new Error("download timeout");
-        await api.android_fs_copy({
-          direction: "sandbox_to_tree",
-          local_path: sandboxPath,
-          tree_uri: tree,
-          relative_path: file.filename || `download_${file.id}`,
-          mime: undefined,
-        });
-        try {
-          await remove(sandboxPath);
-        } catch {}
-        toast.success(`Downloaded: ${file.filename}`);
       } catch (e) {
         console.error(e);
-        toast.error(`Failed to download ${file.filename}`);
+        toast.error(`Failed to start download: ${file.filename}`);
       }
     },
     [ensureTreeUri, setTransfersOpen],
@@ -220,31 +185,16 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
       if (!tree) return;
       let success = 0,
         fail = 0;
-      toast.info(`Downloading ${many.length} files`);
+      toast.info(`Starting ${many.length} downloads`);
       for (const file of many) {
         try {
-          const sandboxDir = await api.download_sandbox_dir();
-          const base = String(sandboxDir || "");
-          if (!base) throw new Error("No sandbox directory available");
-          const sandboxPath = `${base.replace(/[\\/]$/, "")}/${file.id}`;
-          const id = await api.download_new({
+          await api.download_new({
             key: file.id,
-            dest_path: sandboxPath,
             chunk_size: 4 * 1024 * 1024,
+            android_tree_uri: tree,
+            android_relative_path: file.filename || `download_${file.id}`,
           });
           setTransfersOpen(true);
-          const ok = await waitForDownloadComplete(String(id));
-          if (!ok) throw new Error("download timeout");
-          await api.android_fs_copy({
-            direction: "sandbox_to_tree",
-            local_path: sandboxPath,
-            tree_uri: tree,
-            relative_path: file.filename || `download_${file.id}`,
-            mime: undefined,
-          });
-          try {
-            await remove(sandboxPath);
-          } catch {}
           success++;
         } catch (err) {
           console.error(err);
@@ -252,8 +202,8 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
         }
         await new Promise((r) => setTimeout(r, 200));
       }
-      if (success) toast.success(`Successfully downloaded ${success} files`);
-      if (fail) toast.error(`Failed to download ${fail} files`);
+      if (success) toast.success(`Started ${success} downloads`);
+      if (fail) toast.error(`Failed to start ${fail} downloads`);
     },
     [ensureTreeUri, setTransfersOpen],
   );

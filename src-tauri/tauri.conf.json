@@ -38,5 +38,10 @@
         "version": "1.0.0"
       }
     }
+  },
+  "plugins": {
+    "sql": {
+      "preload": ["sqlite:transfers.sqlite3"]
+    }
   }
 }

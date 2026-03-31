@@ -1,6 +1,14 @@
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_sql::Builder::new()
+                .add_migrations(
+                    crate::transfer_db::db_url(),
+                    crate::transfer_db::migrations(),
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -36,6 +44,7 @@ pub fn run() {
             crate::bridge::download_ctrl,
             crate::bridge::download_status,
             crate::bridge::download_sandbox_dir,
+            crate::bridge::transfer_list_active,
             crate::bridge::share_generate,
             crate::bridge::share_list,
             crate::bridge::usage_merge_day,
@@ -68,6 +77,9 @@ pub fn run() {
             // Load persisted app settings and apply log level
             if let Err(e) = crate::settings::init() {
                 crate::logger::warn("app", &format!("settings init failed: {}", e.message));
+            }
+            if let Err(e) = crate::download::init(&app.handle()) {
+                crate::logger::warn("app", &format!("download init failed: {}", e.message));
             }
             // Pre-build a global R2 client if credentials are available, in background.
             tauri::async_runtime::spawn(async move {
@@ -124,6 +136,8 @@ pub mod settings;
 pub mod share;
 pub mod sp_backend;
 pub mod thumbnail;
+pub mod transfer_db;
+pub mod transfer_fsm;
 pub mod types;
 pub mod upload;
 pub mod usage;

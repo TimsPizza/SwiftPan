@@ -2,16 +2,20 @@ import { create } from "zustand";
 
 export type TransferType = "upload" | "download";
 export type TransferState =
+  | "queued"
   | "pending"
   | "running"
   | "paused"
+  | "cancelling"
   | "completed"
+  | "cancelled"
   | "failed";
 
 export interface TransferItem {
   id: string; // transfer_id
   type: TransferType;
   key: string;
+  phase?: string;
   destPath?: string;
   tempPath?: string; // sandbox path where backend wrote
   bytesTotal?: number;

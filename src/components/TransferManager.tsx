@@ -95,6 +95,7 @@ export default function TransferManager() {
                       {t.bytesTotal
                         ? ` / ${formatBytes(t.bytesTotal)}`
                         : ""} · {t.state}
+                      {t.phase ? ` · ${t.phase}` : ""}
                     </div>
                     <div className="mt-1">
                       <Progress
@@ -135,7 +136,9 @@ export default function TransferManager() {
                         {t.state}
                       </span>
                     )}
-                    {(t.state === "running" || t.state === "paused") && (
+                    {(t.state === "queued" ||
+                      t.state === "running" ||
+                      t.state === "paused") && (
                       <button
                         className="hover:bg-muted rounded px-2 py-1 text-[11px]"
                         disabled={busy.has(t.id)}

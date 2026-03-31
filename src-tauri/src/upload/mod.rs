@@ -1,4 +1,6 @@
 use crate::settings;
+use crate::transfer_db::{TransferKind, TransferLifecycle, TransferPhase, TransferSnapshot};
+use crate::transfer_fsm::{apply_transfer_event, TransferState, TransferStateEvent};
 use crate::types::*;
 use crate::{r2_client, sp_backend::SpBackend};
 use once_cell::sync::Lazy;
@@ -35,6 +37,8 @@ pub struct NewUploadStreamParams {
 pub struct UploadStatus {
     pub transfer_id: String,
     pub key: String,
+    pub lifecycle_state: TransferLifecycle,
+    pub phase: Option<TransferPhase>,
     pub bytes_total: u64,
     pub bytes_done: u64,
     pub parts_completed: u32,
@@ -64,12 +68,18 @@ pub enum UploadEvent {
     Resumed {
         transfer_id: String,
     },
+    Cancelling {
+        transfer_id: String,
+    },
     Completed {
         transfer_id: String,
     },
     Failed {
         transfer_id: String,
         error: SpError,
+    },
+    Cancelled {
+        transfer_id: String,
     },
 }
 
@@ -83,6 +93,11 @@ struct UTransfer {
     last_error: Option<SpError>,
     paused: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
+    worker_active: bool,
+    lifecycle_state: TransferLifecycle,
+    phase: Option<TransferPhase>,
+    created_at_ms: i64,
+    updated_at_ms: i64,
 }
 
 static UL: Lazy<Mutex<HashMap<String, UTransfer>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -92,6 +107,84 @@ static USTREAMS: Lazy<Mutex<HashMap<String, mpsc::Sender<Option<Vec<u8>>>>>> =
 
 fn emit_upload(app: &tauri::AppHandle, ev: &UploadEvent) {
     let _ = app.emit("sp://upload_event", ev);
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn state_from_transfer(transfer: &UTransfer) -> TransferState {
+    TransferState {
+        lifecycle: transfer.lifecycle_state.clone(),
+        phase: transfer.phase,
+    }
+}
+
+fn mutate_upload<F>(id: &str, f: F) -> SpResult<()>
+where
+    F: FnOnce(&mut UTransfer),
+{
+    let mut g = UL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: now_ms(),
+    })?;
+    let transfer = g.get_mut(id).ok_or_else(|| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "not found".into(),
+        retry_after_ms: None,
+        context: None,
+        at: now_ms(),
+    })?;
+    f(transfer);
+    transfer.updated_at_ms = now_ms();
+    Ok(())
+}
+
+fn transition_upload(id: &str, event: TransferStateEvent) -> SpResult<TransferState> {
+    let mut g = UL.lock().map_err(|_| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "upload state lock poisoned".into(),
+        retry_after_ms: None,
+        context: None,
+        at: now_ms(),
+    })?;
+    let transfer = g.get_mut(id).ok_or_else(|| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "not found".into(),
+        retry_after_ms: None,
+        context: None,
+        at: now_ms(),
+    })?;
+    let next = apply_transfer_event(TransferKind::Upload, &state_from_transfer(transfer), event)?;
+    transfer.lifecycle_state = next.lifecycle.clone();
+    transfer.phase = next.phase;
+    transfer.updated_at_ms = now_ms();
+    Ok(next)
+}
+
+fn snapshot_from_upload(id: &str, transfer: &UTransfer) -> TransferSnapshot {
+    TransferSnapshot {
+        transfer_id: id.to_string(),
+        kind: TransferKind::Upload,
+        key: transfer.key.clone(),
+        lifecycle_state: transfer.lifecycle_state.clone(),
+        phase: transfer.phase,
+        bytes_total: Some(transfer.bytes_total),
+        bytes_done: transfer.bytes_done,
+        rate_bps: 0,
+        last_error: transfer.last_error.clone(),
+        dest_path: None,
+        android_tree_uri: None,
+        android_relative_path: None,
+        temp_path: None,
+        expected_etag: None,
+        observed_etag: None,
+        created_at_ms: transfer.created_at_ms,
+        updated_at_ms: transfer.updated_at_ms,
+    }
 }
 
 pub async fn start_upload(app: tauri::AppHandle, params: NewUploadParams) -> SpResult<String> {
@@ -128,11 +221,19 @@ pub async fn start_upload(app: tauri::AppHandle, params: NewUploadParams) -> SpR
                 last_error: None,
                 paused: paused.clone(),
                 cancelled: cancelled.clone(),
+                worker_active: false,
+                lifecycle_state: TransferState::queued(TransferKind::Upload).lifecycle,
+                phase: TransferState::queued(TransferKind::Upload).phase,
+                created_at_ms: now_ms(),
+                updated_at_ms: now_ms(),
             },
         );
     }
     let id_spawn = id.clone();
     let app_spawn = app.clone();
+    let _ = mutate_upload(&id, |t| {
+        t.worker_active = true;
+    });
     tokio::spawn(async move {
         let res = run_upload(
             &app_spawn,
@@ -143,10 +244,27 @@ pub async fn start_upload(app: tauri::AppHandle, params: NewUploadParams) -> SpR
         )
         .await;
         if let Err(e) = res {
-            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(t) = g.get_mut(&id_spawn) {
-                t.last_error = Some(e);
+            let _ = mutate_upload(&id_spawn, |t| {
+                t.worker_active = false;
+                t.last_error = Some(e.clone());
+            });
+            match e.kind {
+                ErrorKind::Cancelled => {}
+                _ => {
+                    let _ = transition_upload(&id_spawn, TransferStateEvent::Fail);
+                    emit_upload(
+                        &app_spawn,
+                        &UploadEvent::Failed {
+                            transfer_id: id_spawn.clone(),
+                            error: e,
+                        },
+                    );
+                }
             }
+        } else {
+            let _ = mutate_upload(&id_spawn, |t| {
+                t.worker_active = false;
+            });
         }
     });
     Ok(id)
@@ -179,6 +297,11 @@ pub async fn start_upload_stream(
                 last_error: None,
                 paused: paused.clone(),
                 cancelled: cancelled.clone(),
+                worker_active: false,
+                lifecycle_state: TransferState::queued(TransferKind::Upload).lifecycle,
+                phase: TransferState::queued(TransferKind::Upload).phase,
+                created_at_ms: now_ms(),
+                updated_at_ms: now_ms(),
             },
         );
     }
@@ -196,8 +319,15 @@ pub async fn start_upload_stream(
 
     let id_spawn = id.clone();
     let app_spawn = app.clone();
+    let _ = mutate_upload(&id, |t| {
+        t.worker_active = true;
+    });
     tokio::spawn(async move {
         let res = async {
+            transition_upload(
+                &id_spawn,
+                TransferStateEvent::Run(TransferPhase::PreparingSource),
+            )?;
             emit_upload(
                 &app_spawn,
                 &UploadEvent::Started {
@@ -219,28 +349,44 @@ pub async fn start_upload_stream(
                 message: format!("open writer: {e}"),
                 retry_after_ms: Some(500),
                 context: None,
-                at: chrono::Utc::now().timestamp_millis(),
+                at: now_ms(),
             })?;
+            transition_upload(
+                &id_spawn,
+                TransferStateEvent::Run(TransferPhase::UploadingRemote),
+            )?;
+            let mut was_paused = false;
             let mut part_number: u32 = 1;
             while let Some(msg) = rx.recv().await {
                 if cancelled.load(Ordering::Relaxed) {
                     break;
                 }
                 while paused.load(Ordering::Relaxed) {
+                    if !was_paused {
+                        transition_upload(&id_spawn, TransferStateEvent::Pause)?;
+                        emit_upload(
+                            &app_spawn,
+                            &UploadEvent::Paused {
+                                transfer_id: id_spawn.clone(),
+                            },
+                        );
+                        was_paused = true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                if was_paused {
+                    transition_upload(
+                        &id_spawn,
+                        TransferStateEvent::Run(TransferPhase::UploadingRemote),
+                    )?;
                     emit_upload(
                         &app_spawn,
-                        &UploadEvent::Paused {
+                        &UploadEvent::Resumed {
                             transfer_id: id_spawn.clone(),
                         },
                     );
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    was_paused = false;
                 }
-                emit_upload(
-                    &app_spawn,
-                    &UploadEvent::Resumed {
-                        transfer_id: id_spawn.clone(),
-                    },
-                );
                 match msg {
                     Some(bytes) => {
                         let n = bytes.len() as u64;
@@ -251,13 +397,10 @@ pub async fn start_upload_stream(
                             context: None,
                             at: chrono::Utc::now().timestamp_millis(),
                         })?;
-                        {
-                            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
-                            if let Some(t) = g.get_mut(&id_spawn) {
-                                t.bytes_done = t.bytes_done.saturating_add(n);
-                                t.parts_completed += 1;
-                            }
-                        }
+                        mutate_upload(&id_spawn, |t| {
+                            t.bytes_done = t.bytes_done.saturating_add(n);
+                            t.parts_completed += 1;
+                        })?;
                         emit_upload(
                             &app_spawn,
                             &UploadEvent::PartProgress {
@@ -281,13 +424,34 @@ pub async fn start_upload_stream(
                     None => break,
                 }
             }
+            if cancelled.load(Ordering::Relaxed) {
+                transition_upload(&id_spawn, TransferStateEvent::CancelConfirm)?;
+                emit_upload(
+                    &app_spawn,
+                    &UploadEvent::Cancelled {
+                        transfer_id: id_spawn.clone(),
+                    },
+                );
+                return Err(SpError {
+                    kind: ErrorKind::Cancelled,
+                    message: "cancelled".into(),
+                    retry_after_ms: None,
+                    context: None,
+                    at: now_ms(),
+                });
+            }
+            transition_upload(
+                &id_spawn,
+                TransferStateEvent::Run(TransferPhase::FinalizingRemote),
+            )?;
             writer.close().await.map_err(|e| SpError {
                 kind: ErrorKind::RetryableNet,
                 message: format!("writer close: {e}"),
                 retry_after_ms: Some(300),
                 context: None,
-                at: chrono::Utc::now().timestamp_millis(),
+                at: now_ms(),
             })?;
+            transition_upload(&id_spawn, TransferStateEvent::Complete)?;
             emit_upload(
                 &app_spawn,
                 &UploadEvent::Completed {
@@ -298,10 +462,27 @@ pub async fn start_upload_stream(
         }
         .await;
         if let Err(e) = res {
-            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(t) = g.get_mut(&id_spawn) {
-                t.last_error = Some(e);
+            let _ = mutate_upload(&id_spawn, |t| {
+                t.worker_active = false;
+                t.last_error = Some(e.clone());
+            });
+            match e.kind {
+                ErrorKind::Cancelled => {}
+                _ => {
+                    let _ = transition_upload(&id_spawn, TransferStateEvent::Fail);
+                    emit_upload(
+                        &app_spawn,
+                        &UploadEvent::Failed {
+                            transfer_id: id_spawn.clone(),
+                            error: e,
+                        },
+                    );
+                }
             }
+        } else {
+            let _ = mutate_upload(&id_spawn, |t| {
+                t.worker_active = false;
+            });
         }
         // cleanup channel
         let mut s = USTREAMS.lock().unwrap_or_else(|p| p.into_inner());
@@ -346,14 +527,26 @@ pub async fn start_upload_android_uri(
                 last_error: None,
                 paused: paused.clone(),
                 cancelled: cancelled.clone(),
+                worker_active: false,
+                lifecycle_state: TransferState::queued(TransferKind::Upload).lifecycle,
+                phase: TransferState::queued(TransferKind::Upload).phase,
+                created_at_ms: now_ms(),
+                updated_at_ms: now_ms(),
             },
         );
     }
 
     let id_spawn = id.clone();
     let app_spawn = app.clone();
+    let _ = mutate_upload(&id, |t| {
+        t.worker_active = true;
+    });
     tokio::spawn(async move {
         let res = async {
+            transition_upload(
+                &id_spawn,
+                TransferStateEvent::Run(TransferPhase::PreparingSource),
+            )?;
             emit_upload(
                 &app_spawn,
                 &UploadEvent::Started {
@@ -368,8 +561,12 @@ pub async fn start_upload_android_uri(
                 message: format!("open writer: {e}"),
                 retry_after_ms: Some(500),
                 context: None,
-                at: chrono::Utc::now().timestamp_millis(),
+                at: now_ms(),
             })?;
+            transition_upload(
+                &id_spawn,
+                TransferStateEvent::Run(TransferPhase::UploadingRemote),
+            )?;
 
             // Open readable file from SAF URI
             let api = app_spawn.android_fs();
@@ -388,33 +585,44 @@ pub async fn start_upload_android_uri(
 
             // Update total size if available
             if let Ok(meta) = file.metadata() {
-                let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
-                if let Some(t) = g.get_mut(&id_spawn) {
+                let _ = mutate_upload(&id_spawn, |t| {
                     t.bytes_total = meta.len();
-                }
+                });
             }
 
             let mut part_number: u32 = 1;
             let mut buf = vec![0u8; part_size.max(256 * 1024) as usize];
+            let mut was_paused = false;
             loop {
                 if cancelled.load(Ordering::Relaxed) {
                     break;
                 }
                 while paused.load(Ordering::Relaxed) {
+                    if !was_paused {
+                        transition_upload(&id_spawn, TransferStateEvent::Pause)?;
+                        emit_upload(
+                            &app_spawn,
+                            &UploadEvent::Paused {
+                                transfer_id: id_spawn.clone(),
+                            },
+                        );
+                        was_paused = true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                if was_paused {
+                    transition_upload(
+                        &id_spawn,
+                        TransferStateEvent::Run(TransferPhase::UploadingRemote),
+                    )?;
                     emit_upload(
                         &app_spawn,
-                        &UploadEvent::Paused {
+                        &UploadEvent::Resumed {
                             transfer_id: id_spawn.clone(),
                         },
                     );
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    was_paused = false;
                 }
-                emit_upload(
-                    &app_spawn,
-                    &UploadEvent::Resumed {
-                        transfer_id: id_spawn.clone(),
-                    },
-                );
 
                 let n = file.read(&mut buf).map_err(|e| SpError {
                     kind: ErrorKind::RetryableNet,
@@ -435,13 +643,10 @@ pub async fn start_upload_android_uri(
                     at: chrono::Utc::now().timestamp_millis(),
                 })?;
 
-                {
-                    let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
-                    if let Some(t) = g.get_mut(&id_spawn) {
-                        t.bytes_done = t.bytes_done.saturating_add(n as u64);
-                        t.parts_completed += 1;
-                    }
-                }
+                mutate_upload(&id_spawn, |t| {
+                    t.bytes_done = t.bytes_done.saturating_add(n as u64);
+                    t.parts_completed += 1;
+                })?;
                 emit_upload(
                     &app_spawn,
                     &UploadEvent::PartProgress {
@@ -463,13 +668,37 @@ pub async fn start_upload_android_uri(
                 part_number += 1;
             }
 
+            if cancelled.load(Ordering::Relaxed) {
+                let _ = writer.close().await;
+                let _ = client.op.delete(&key).await;
+                transition_upload(&id_spawn, TransferStateEvent::CancelConfirm)?;
+                emit_upload(
+                    &app_spawn,
+                    &UploadEvent::Cancelled {
+                        transfer_id: id_spawn.clone(),
+                    },
+                );
+                return Err(SpError {
+                    kind: ErrorKind::Cancelled,
+                    message: "cancelled".into(),
+                    retry_after_ms: None,
+                    context: None,
+                    at: now_ms(),
+                });
+            }
+
+            transition_upload(
+                &id_spawn,
+                TransferStateEvent::Run(TransferPhase::FinalizingRemote),
+            )?;
             writer.close().await.map_err(|e| SpError {
                 kind: ErrorKind::RetryableNet,
                 message: format!("writer close: {e}"),
                 retry_after_ms: Some(300),
                 context: None,
-                at: chrono::Utc::now().timestamp_millis(),
+                at: now_ms(),
             })?;
+            transition_upload(&id_spawn, TransferStateEvent::Complete)?;
             emit_upload(
                 &app_spawn,
                 &UploadEvent::Completed {
@@ -480,10 +709,27 @@ pub async fn start_upload_android_uri(
         }
         .await;
         if let Err(e) = res {
-            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(t) = g.get_mut(&id_spawn) {
-                t.last_error = Some(e);
+            let _ = mutate_upload(&id_spawn, |t| {
+                t.worker_active = false;
+                t.last_error = Some(e.clone());
+            });
+            match e.kind {
+                ErrorKind::Cancelled => {}
+                _ => {
+                    let _ = transition_upload(&id_spawn, TransferStateEvent::Fail);
+                    emit_upload(
+                        &app_spawn,
+                        &UploadEvent::Failed {
+                            transfer_id: id_spawn.clone(),
+                            error: e,
+                        },
+                    );
+                }
             }
+        } else {
+            let _ = mutate_upload(&id_spawn, |t| {
+                t.worker_active = false;
+            });
         }
     });
 
@@ -596,6 +842,7 @@ async fn run_upload(
             }
         }
     };
+    transition_upload(id, TransferStateEvent::Run(TransferPhase::PreparingSource))?;
     emit_upload(
         app,
         &UploadEvent::Started {
@@ -628,36 +875,46 @@ async fn run_upload(
         message: format!("open writer: {e}"),
         retry_after_ms: Some(500),
         context: None,
-        at: chrono::Utc::now().timestamp_millis(),
+        at: now_ms(),
     })?;
+    transition_upload(id, TransferStateEvent::Run(TransferPhase::UploadingRemote))?;
 
     let mut part_number: u32 = 1;
+    let mut was_paused = false;
     loop {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
         while paused.load(Ordering::Relaxed) {
+            if !was_paused {
+                transition_upload(id, TransferStateEvent::Pause)?;
+                emit_upload(
+                    app,
+                    &UploadEvent::Paused {
+                        transfer_id: id.to_string(),
+                    },
+                );
+                was_paused = true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        if was_paused {
+            transition_upload(id, TransferStateEvent::Run(TransferPhase::UploadingRemote))?;
             emit_upload(
                 app,
-                &UploadEvent::Paused {
+                &UploadEvent::Resumed {
                     transfer_id: id.to_string(),
                 },
             );
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            was_paused = false;
         }
-        emit_upload(
-            app,
-            &UploadEvent::Resumed {
-                transfer_id: id.to_string(),
-            },
-        );
         let mut buf = vec![0u8; params.part_size as usize];
         let n = file.read(&mut buf).await.map_err(|e| SpError {
             kind: ErrorKind::RetryableNet,
             message: format!("read src: {e}"),
             retry_after_ms: Some(200),
             context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+            at: now_ms(),
         })?;
         if n == 0 {
             break;
@@ -668,16 +925,13 @@ async fn run_upload(
             message: format!("writer write: {e}"),
             retry_after_ms: Some(300),
             context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+            at: now_ms(),
         })?;
 
-        {
-            let mut g = UL.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(t) = g.get_mut(id) {
-                t.bytes_done = (t.bytes_done as u64 + n as u64) as u64;
-                t.parts_completed += 1;
-            }
-        }
+        mutate_upload(id, |t| {
+            t.bytes_done = t.bytes_done.saturating_add(n as u64);
+            t.parts_completed += 1;
+        })?;
         emit_upload(
             app,
             &UploadEvent::PartProgress {
@@ -703,17 +957,11 @@ async fn run_upload(
     if cancelled.load(Ordering::Relaxed) {
         let _ = writer.close().await;
         let _ = client.op.delete(&params.key).await;
+        transition_upload(id, TransferStateEvent::CancelConfirm)?;
         emit_upload(
             app,
-            &UploadEvent::Failed {
+            &UploadEvent::Cancelled {
                 transfer_id: id.to_string(),
-                error: SpError {
-                    kind: ErrorKind::Cancelled,
-                    message: "cancelled".into(),
-                    retry_after_ms: None,
-                    context: None,
-                    at: chrono::Utc::now().timestamp_millis(),
-                },
             },
         );
         return Err(SpError {
@@ -721,17 +969,18 @@ async fn run_upload(
             message: "cancelled".into(),
             retry_after_ms: None,
             context: None,
-            at: chrono::Utc::now().timestamp_millis(),
+            at: now_ms(),
         });
     }
 
     // Complete writer
+    transition_upload(id, TransferStateEvent::Run(TransferPhase::FinalizingRemote))?;
     writer.close().await.map_err(|e| SpError {
         kind: ErrorKind::RetryableNet,
         message: format!("writer close: {e}"),
         retry_after_ms: Some(300),
         context: None,
-        at: chrono::Utc::now().timestamp_millis(),
+        at: now_ms(),
     })?;
 
     // Optionally upload local thumbnail file in background (best-effort)
@@ -759,6 +1008,7 @@ async fn run_upload(
         });
     }
     // Op tracked by HTTP layer.
+    transition_upload(id, TransferStateEvent::Complete)?;
     emit_upload(
         app,
         &UploadEvent::Completed {
@@ -778,22 +1028,24 @@ pub fn pause(app: &tauri::AppHandle, id: &str) -> SpResult<()> {
     })?;
     if let Some(t) = g.get(id) {
         t.paused.store(true, Ordering::Relaxed);
-        emit_upload(
-            app,
-            &UploadEvent::Paused {
-                transfer_id: id.to_string(),
-            },
-        );
-        Ok(())
     } else {
-        Err(SpError {
+        return Err(SpError {
             kind: ErrorKind::NotRetriable,
             message: "not found".into(),
             retry_after_ms: None,
             context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })
+            at: now_ms(),
+        });
     }
+    drop(g);
+    transition_upload(id, TransferStateEvent::Pause)?;
+    emit_upload(
+        app,
+        &UploadEvent::Paused {
+            transfer_id: id.to_string(),
+        },
+    );
+    Ok(())
 }
 pub fn resume(app: &tauri::AppHandle, id: &str) -> SpResult<()> {
     let g = UL.lock().map_err(|_| SpError {
@@ -805,22 +1057,28 @@ pub fn resume(app: &tauri::AppHandle, id: &str) -> SpResult<()> {
     })?;
     if let Some(t) = g.get(id) {
         t.paused.store(false, Ordering::Relaxed);
-        emit_upload(
-            app,
-            &UploadEvent::Resumed {
-                transfer_id: id.to_string(),
-            },
-        );
-        Ok(())
     } else {
-        Err(SpError {
+        return Err(SpError {
             kind: ErrorKind::NotRetriable,
             message: "not found".into(),
             retry_after_ms: None,
             context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })
+            at: now_ms(),
+        });
     }
+    let phase = g
+        .get(id)
+        .and_then(|t| t.phase)
+        .ok_or_else(|| err_invalid("paused upload missing phase"))?;
+    drop(g);
+    transition_upload(id, TransferStateEvent::Run(phase))?;
+    emit_upload(
+        app,
+        &UploadEvent::Resumed {
+            transfer_id: id.to_string(),
+        },
+    );
+    Ok(())
 }
 pub fn cancel(app: &tauri::AppHandle, id: &str) -> SpResult<()> {
     let g = UL.lock().map_err(|_| SpError {
@@ -832,29 +1090,24 @@ pub fn cancel(app: &tauri::AppHandle, id: &str) -> SpResult<()> {
     })?;
     if let Some(t) = g.get(id) {
         t.cancelled.store(true, Ordering::Relaxed);
-        emit_upload(
-            app,
-            &UploadEvent::Failed {
-                transfer_id: id.to_string(),
-                error: SpError {
-                    kind: ErrorKind::Cancelled,
-                    message: "cancelled".into(),
-                    retry_after_ms: None,
-                    context: None,
-                    at: chrono::Utc::now().timestamp_millis(),
-                },
-            },
-        );
-        Ok(())
     } else {
-        Err(SpError {
+        return Err(SpError {
             kind: ErrorKind::NotRetriable,
             message: "not found".into(),
             retry_after_ms: None,
             context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })
+            at: now_ms(),
+        });
     }
+    drop(g);
+    transition_upload(id, TransferStateEvent::CancelRequest)?;
+    emit_upload(
+        app,
+        &UploadEvent::Cancelling {
+            transfer_id: id.to_string(),
+        },
+    );
+    Ok(())
 }
 pub fn status(id: &str) -> SpResult<UploadStatus> {
     let g = UL.lock().map_err(|_| SpError {
@@ -874,6 +1127,8 @@ pub fn status(id: &str) -> SpResult<UploadStatus> {
     Ok(UploadStatus {
         transfer_id: id.into(),
         key: t.key.clone(),
+        lifecycle_state: t.lifecycle_state.clone(),
+        phase: t.phase,
         bytes_total: t.bytes_total,
         bytes_done: t.bytes_done,
         parts_completed: t.parts_completed,
@@ -881,4 +1136,19 @@ pub fn status(id: &str) -> SpResult<UploadStatus> {
         eta_ms: None,
         last_error: t.last_error.clone(),
     })
+}
+
+pub fn list_active_snapshots() -> Vec<TransferSnapshot> {
+    let g = match UL.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    g.iter()
+        .filter_map(|(id, t)| {
+            if t.lifecycle_state.is_terminal() {
+                return None;
+            }
+            Some(snapshot_from_upload(id, t))
+        })
+        .collect()
 }
