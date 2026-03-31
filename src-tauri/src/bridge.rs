@@ -23,7 +23,7 @@ pub async fn backend_status() -> SpResult<BackendStatus> {
     r
 }
 
-// Generate a 128x128 thumbnail (<=16KB) using OS-native or pure-Rust path and upload to R2 as thumbnail_<key>.jpg
+// Generate a 128x128 thumbnail (<=16KB) and upload it into the reserved thumbnail namespace.
 #[tauri::command]
 pub async fn generate_thumbnail_and_upload(
     _app: tauri::AppHandle,
@@ -43,9 +43,41 @@ pub async fn generate_thumbnail_and_upload(
     // Upload bytes to R2
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
-    let thumb_key = format!("thumbnail_{}.jpg", key);
+    let thumb_key = crate::thumbnail::thumbnail_key_for(&key);
     r2_client::put_object_bytes(&client, &thumb_key, bytes, None, false).await?;
     Ok(Some(thumb_key))
+}
+
+#[tauri::command]
+pub async fn thumbnail_get_cached_data(
+    object_key: String,
+    object_etag: Option<String>,
+) -> SpResult<Option<String>> {
+    if let Some(cached) = crate::transfer_db::get_thumbnail_cache(&object_key)? {
+        if cached.object_etag == object_etag {
+            return Ok(Some(cached.data_url));
+        }
+    }
+
+    let thumb_key = crate::thumbnail::thumbnail_key_for(&object_key);
+    let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
+    let client = r2_client::build_client(&bundle.r2).await?;
+    let Some(bytes) = r2_client::read_object_bytes_opt(&client, &thumb_key).await? else {
+        let _ = crate::transfer_db::delete_thumbnail_cache(&object_key);
+        return Ok(None);
+    };
+    let data_url = format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    );
+    crate::transfer_db::upsert_thumbnail_cache(&crate::transfer_db::ThumbnailCacheEntry {
+        object_key,
+        object_etag,
+        thumbnail_key: thumb_key,
+        data_url: data_url.clone(),
+        updated_at_ms: chrono::Utc::now().timestamp_millis(),
+    })?;
+    Ok(Some(data_url))
 }
 
 // Let user pick a directory (one-time), save the Tree-URI persistently
@@ -1014,6 +1046,9 @@ pub async fn delete_object(key: String) -> SpResult<String> {
             "bridge",
             &format!("delete_object error: key={} err={}", key, e.message),
         );
+    } else if !crate::thumbnail::is_thumbnail_key(&key) {
+        let _ = r2_client::delete_object(&client, &crate::thumbnail::thumbnail_key_for(&key)).await;
+        let _ = crate::transfer_db::delete_thumbnail_cache(&key);
     }
     res
 }

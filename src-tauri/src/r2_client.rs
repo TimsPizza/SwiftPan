@@ -227,6 +227,7 @@ pub async fn list_objects(
     _continuation: Option<String>,
     max_keys: i32,
 ) -> SpResult<crate::types::ListPage> {
+    use crate::thumbnail;
     use crate::types::{FileEntry, ANALYTICS_PREFIX};
     // Op counts handled at HTTP layer.
 
@@ -248,7 +249,7 @@ pub async fn list_objects(
             break;
         }
         let key = e.path().to_string();
-        if key.ends_with('/') {
+        if key.ends_with('/') || thumbnail::is_thumbnail_key(&key) {
             continue;
         }
         // Top-level delimiter emulation
@@ -269,6 +270,7 @@ pub async fn list_objects(
             size: None,
             last_modified_ms: None,
             etag: None,
+            thumbnail_key: None,
             is_prefix: true,
             protected: k.starts_with(ANALYTICS_PREFIX),
         });
@@ -282,6 +284,7 @@ pub async fn list_objects(
             size: Some(size),
             last_modified_ms,
             etag,
+            thumbnail_key: None,
             is_prefix: false,
             protected: key.starts_with(ANALYTICS_PREFIX),
         });
@@ -313,9 +316,11 @@ pub async fn list_all_objects_flat(
     client: &R2Client,
     max_total: i32,
 ) -> SpResult<Vec<crate::types::FileEntry>> {
+    use crate::thumbnail;
     use crate::types::{FileEntry, ANALYTICS_PREFIX};
     use futures::TryStreamExt;
-    let mut items: Vec<FileEntry> = vec![];
+    let mut files: Vec<FileEntry> = vec![];
+    let mut thumbs = std::collections::HashSet::new();
     // Use OpenDAL recursive scan to traverse all entries under root.
     // We still stop client-side when reaching max_total.
     // Use lister_with().recursive(true) to stream all entries without manual BFS.
@@ -342,22 +347,37 @@ pub async fn list_all_objects_flat(
         if key.ends_with('/') {
             continue;
         }
+        if thumbnail::is_thumbnail_key(&key) {
+            thumbs.insert(key);
+            continue;
+        }
         let meta = entry_res.metadata().clone();
         let size = meta.content_length();
         let last_modified_ms = meta.last_modified().map(|dt| dt.timestamp_millis());
         let etag = meta.etag().map(|s| s.to_string());
-        items.push(FileEntry {
+        files.push(FileEntry {
             key: key.clone(),
             size: Some(size),
             last_modified_ms,
             etag,
+            thumbnail_key: None,
             is_prefix: false,
             protected: key.starts_with(ANALYTICS_PREFIX),
         });
-        if items.len() as i32 >= max_total {
+        if files.len() as i32 >= max_total {
             break;
         }
     }
+    let mut items = files
+        .into_iter()
+        .map(|mut item| {
+            let thumb_key = thumbnail::thumbnail_key_for(&item.key);
+            if thumbs.contains(&thumb_key) {
+                item.thumbnail_key = Some(thumb_key);
+            }
+            item
+        })
+        .collect::<Vec<_>>();
     items.sort_by(|a, b| a.key.cmp(&b.key));
     crate::logger::info(
         "r2",
@@ -429,6 +449,25 @@ pub async fn get_object_bytes_opt(
             Err(SpError {
                 kind: ErrorKind::RetryableNet,
                 message: format!("GetObject: {err}"),
+                retry_after_ms: Some(500),
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })
+        }
+    }
+}
+
+pub async fn read_object_bytes_opt(client: &R2Client, key: &str) -> SpResult<Option<Vec<u8>>> {
+    match client.op.read(key).await {
+        Ok(data) => Ok(Some(data.to_vec())),
+        Err(err) => {
+            if matches!(err.kind(), OdErrorKind::NotFound) {
+                return Ok(None);
+            }
+            crate::logger::error("r2", &format!("ReadObject error: {}", err));
+            Err(SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("ReadObject: {err}"),
                 retry_after_ms: Some(500),
                 context: None,
                 at: chrono::Utc::now().timestamp_millis(),

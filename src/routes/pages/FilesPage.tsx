@@ -24,32 +24,18 @@ export default function FilesPage() {
       const all = (data || [])
         .filter((it: any) => !it.is_prefix)
         .filter((it: any) => !it.key.startsWith("analytics/"));
-      const thumbs = new Set<string>();
-      for (const it of all) {
+      const mapped = all.map((it: any) => {
         const name = it.key.split("/").pop() || it.key;
-        if (name.startsWith("thumbnail_") && name.endsWith(".jpg")) {
-          thumbs.add(it.key);
-        }
-      }
-      const mapped = all
-        .filter((it: any) => {
-          const base = it.key.split("/").pop() || it.key;
-          // hide thumbnail objects from main listing
-          return !(base.startsWith("thumbnail_") && base.endsWith(".jpg"));
-        })
-        .map((it: any) => {
-          const name = it.key.split("/").pop() || it.key;
-          const thumbKey = `thumbnail_${name}.jpg`;
-          const hasThumb = thumbs.has(it.key.replace(name, thumbKey));
-          return {
-            id: it.key,
-            filename: name,
-            size: it.size ?? 0,
-            uploadedAt: it.last_modified_ms ?? Date.now(),
-            originalName: it.key,
-            thumbnailKey: hasThumb ? it.key.replace(name, thumbKey) : undefined,
-          } as any;
-        });
+        return {
+          id: it.key,
+          filename: name,
+          size: it.size ?? 0,
+          uploadedAt: it.last_modified_ms ?? Date.now(),
+          etag: it.etag ?? undefined,
+          originalName: it.key,
+          thumbnailKey: it.thumbnail_key ?? undefined,
+        } as any;
+      });
       setFilesStore(mapped);
       setError(null);
     } catch (e: any) {

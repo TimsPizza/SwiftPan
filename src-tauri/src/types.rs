@@ -119,6 +119,7 @@ pub struct FileEntry {
     pub size: Option<u64>,
     pub last_modified_ms: Option<i64>,
     pub etag: Option<String>,
+    pub thumbnail_key: Option<String>,
     pub is_prefix: bool,
     pub protected: bool,
 }

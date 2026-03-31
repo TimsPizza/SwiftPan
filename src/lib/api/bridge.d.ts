@@ -188,3 +188,8 @@ export type GenerateThumbnailAndUploadArgs = {
   key: string;
   sourcePath: string; // mapped to Rust source_path
 };
+
+export type ThumbnailGetCachedDataArgs = {
+  objectKey: string;
+  objectEtag?: string;
+};

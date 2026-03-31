@@ -4,14 +4,32 @@ use base64::Engine;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::XChaCha20Poly1305;
 use directories::ProjectDirs;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use rand::{rngs::OsRng, RngCore};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tauri::Manager;
 
 const EXPORT_SECRET: &str = "swiftpan-export-v1";
+const VAULT_FILE_NAME: &str = "vault.sp";
+const VAULT_META_FILE_NAME: &str = "vault.meta.json";
+const DEVICE_KEY_FILE_NAME: &str = "device.key";
+#[cfg(target_os = "android")]
+const DEVICE_KEY_WRAPPED_FILE_NAME: &str = "device.key.enc";
+#[cfg(target_os = "android")]
+const ANDROID_KEY_ALIAS: &str = "com.timspizza.swiftpan.device_key.v1";
+
+static APP_HANDLE: OnceCell<tauri::AppHandle> = OnceCell::new();
+
+#[cfg(target_os = "android")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct WrappedDeviceKey {
+    version: u8,
+    iv_b64: String,
+    ciphertext_b64: String,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CredentialBundle {
@@ -48,6 +66,12 @@ pub struct BackendPackage {
 }
 
 pub struct SpBackend;
+
+pub fn init(app: &tauri::AppHandle) -> SpResult<()> {
+    let _ = APP_HANDLE.set(app.clone());
+    migrate_legacy_vault_dir()?;
+    Ok(())
+}
 
 impl SpBackend {
     pub fn status() -> SpResult<BackendState> {
@@ -115,7 +139,7 @@ impl SpBackend {
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
-        fs::write(dir.join("vault.sp"), pkg_bytes).map_err(|e| SpError {
+        fs::write(dir.join(VAULT_FILE_NAME), pkg_bytes).map_err(|e| SpError {
             kind: ErrorKind::NotRetriable,
             message: format!("write credentials file failed: {e}"),
             retry_after_ms: None,
@@ -130,7 +154,7 @@ impl SpBackend {
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
-        fs::write(dir.join("vault.meta.json"), meta_bytes).map_err(|e| SpError {
+        fs::write(dir.join(VAULT_META_FILE_NAME), meta_bytes).map_err(|e| SpError {
             kind: ErrorKind::NotRetriable,
             message: format!("write credentials meta failed: {e}"),
             retry_after_ms: None,
@@ -157,7 +181,7 @@ impl SpBackend {
             Ok(b) => b,
             Err(e) => {
                 let dir = vault_dir()?;
-                let vault_exists = dir.join("vault.sp").exists();
+                let vault_exists = dir.join(VAULT_FILE_NAME).exists();
                 if !vault_exists {
                     // Start from an empty/default R2 config and apply patch below
                     CredentialBundle {
@@ -330,7 +354,7 @@ impl SpBackend {
             "get_decrypted_bundle_if_unlocked attempting lazy load from disk",
         );
         let dir = vault_dir()?;
-        let pkg_bytes = fs::read(dir.join("vault.sp")).map_err(|e| {
+        let pkg_bytes = fs::read(dir.join(VAULT_FILE_NAME)).map_err(|e| {
             crate::logger::error(
                 "sp_backend",
                 "get_decrypted_bundle_if_unlocked read vault.sp failed",
@@ -356,7 +380,7 @@ impl SpBackend {
                 at: chrono::Utc::now().timestamp_millis(),
             }
         })?;
-        let key = load_or_create_device_key()?;
+        let key = load_existing_device_key()?;
         let cipher = XChaCha20Poly1305::new((&key).into());
         let nonce = base64::engine::general_purpose::STANDARD_NO_PAD
             .decode(pkg.nonce_b64.as_bytes())
@@ -415,34 +439,9 @@ pub struct KdfParams {
 
 fn load_or_create_device_key() -> SpResult<[u8; 32]> {
     let dir = vault_dir()?;
-    let key_path = dir.join("device.key");
-    if key_path.exists() {
-        let data = fs::read(&key_path).map_err(|e| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: format!("read device.key failed: {e}"),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        })?;
-        let mut key = [0u8; 32];
-        if data.len() == 32 {
-            key.copy_from_slice(&data);
-            return Ok(key);
-        }
-        // support base64 stored
-        if let Ok(decoded) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(&data) {
-            if decoded.len() == 32 {
-                key.copy_from_slice(&decoded);
-                return Ok(key);
-            }
-        }
-        return Err(SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "invalid device.key".into(),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        });
+    let key_path = dir.join(DEVICE_KEY_FILE_NAME);
+    if let Ok(key) = load_existing_device_key() {
+        return Ok(key);
     }
     let mut key = [0u8; 32];
     OsRng.fill_bytes(&mut key);
@@ -453,6 +452,13 @@ fn load_or_create_device_key() -> SpResult<[u8; 32]> {
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     })?;
+    #[cfg(target_os = "android")]
+    {
+        let wrapped_path = dir.join(DEVICE_KEY_WRAPPED_FILE_NAME);
+        store_android_wrapped_device_key(&wrapped_path, &key)?;
+        return Ok(key);
+    }
+    #[cfg(not(target_os = "android"))]
     fs::write(&key_path, &key).map_err(|e| SpError {
         kind: ErrorKind::NotRetriable,
         message: format!("write device.key failed: {e}"),
@@ -461,6 +467,441 @@ fn load_or_create_device_key() -> SpResult<[u8; 32]> {
         at: chrono::Utc::now().timestamp_millis(),
     })?;
     Ok(key)
+}
+
+fn load_existing_device_key() -> SpResult<[u8; 32]> {
+    let dir = vault_dir()?;
+    let key_path = dir.join(DEVICE_KEY_FILE_NAME);
+    #[cfg(target_os = "android")]
+    {
+        let wrapped_path = dir.join(DEVICE_KEY_WRAPPED_FILE_NAME);
+        if wrapped_path.exists() {
+            return load_android_wrapped_device_key(&wrapped_path);
+        }
+        if key_path.exists() {
+            let key = load_plaintext_device_key(&key_path)?;
+            store_android_wrapped_device_key(&wrapped_path, &key)?;
+            let _ = fs::remove_file(&key_path);
+            return Ok(key);
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    if key_path.exists() {
+        return load_plaintext_device_key(&key_path);
+    }
+    Err(SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "device key not found".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })
+}
+
+fn load_plaintext_device_key(key_path: &Path) -> SpResult<[u8; 32]> {
+    let data = fs::read(key_path).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("read device.key failed: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    let mut key = [0u8; 32];
+    if data.len() == 32 {
+        key.copy_from_slice(&data);
+        return Ok(key);
+    }
+    if let Ok(decoded) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(&data) {
+        if decoded.len() == 32 {
+            key.copy_from_slice(&decoded);
+            return Ok(key);
+        }
+    }
+    Err(SpError {
+        kind: ErrorKind::NotRetriable,
+        message: "invalid device.key".into(),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })
+}
+
+#[cfg(target_os = "android")]
+fn store_android_wrapped_device_key(path: &Path, key: &[u8; 32]) -> SpResult<()> {
+    let (iv, ciphertext) = android_keystore_encrypt(key)?;
+    let wrapped = WrappedDeviceKey {
+        version: 1,
+        iv_b64: base64::engine::general_purpose::STANDARD_NO_PAD.encode(iv),
+        ciphertext_b64: base64::engine::general_purpose::STANDARD_NO_PAD.encode(ciphertext),
+    };
+    let bytes = serde_json::to_vec(&wrapped).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("serialize wrapped device key failed: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    fs::write(path, bytes).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("write wrapped device key failed: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })
+}
+
+#[cfg(target_os = "android")]
+fn load_android_wrapped_device_key(path: &Path) -> SpResult<[u8; 32]> {
+    let bytes = fs::read(path).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("read wrapped device key failed: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    let wrapped: WrappedDeviceKey = serde_json::from_slice(&bytes).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("parse wrapped device key failed: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    let iv = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(wrapped.iv_b64.as_bytes())
+        .map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("decode wrapped key iv failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+    let ciphertext = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(wrapped.ciphertext_b64.as_bytes())
+        .map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("decode wrapped key ciphertext failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+    let plaintext = android_keystore_decrypt(&iv, &ciphertext)?;
+    if plaintext.len() != 32 {
+        return Err(SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "invalid wrapped device key length".into(),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        });
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&plaintext);
+    Ok(key)
+}
+
+#[cfg(target_os = "android")]
+fn android_keystore_encrypt(plaintext: &[u8]) -> SpResult<(Vec<u8>, Vec<u8>)> {
+    android_with_env(|env| {
+        let secret_key = android_keystore_secret_key(env)?;
+        let cipher = android_cipher(env)?;
+        env.call_method(
+            &cipher,
+            "init",
+            "(ILjava/security/Key;)V",
+            &[
+                jni::objects::JValue::Int(1),
+                jni::objects::JValue::Object(&secret_key),
+            ],
+        )
+        .map_err(android_jni_err)?;
+        let input = env
+            .byte_array_from_slice(plaintext)
+            .map_err(android_jni_err)?;
+        let ciphertext = env
+            .call_method(
+                &cipher,
+                "doFinal",
+                "([B)[B",
+                &[jni::objects::JValue::Object(&jni::objects::JObject::from(
+                    input,
+                ))],
+            )
+            .map_err(android_jni_err)?
+            .l()
+            .map_err(android_jni_err)?;
+        let iv = env
+            .call_method(&cipher, "getIV", "()[B", &[])
+            .map_err(android_jni_err)?
+            .l()
+            .map_err(android_jni_err)?;
+        Ok((
+            env.convert_byte_array(jni::objects::JByteArray::from(iv))
+                .map_err(android_jni_err)?,
+            env.convert_byte_array(jni::objects::JByteArray::from(ciphertext))
+                .map_err(android_jni_err)?,
+        ))
+    })
+}
+
+#[cfg(target_os = "android")]
+fn android_keystore_decrypt(iv: &[u8], ciphertext: &[u8]) -> SpResult<Vec<u8>> {
+    android_with_env(|env| {
+        let secret_key = android_keystore_secret_key(env)?;
+        let cipher = android_cipher(env)?;
+        let iv_array = env.byte_array_from_slice(iv).map_err(android_jni_err)?;
+        let spec = env
+            .new_object(
+                "javax/crypto/spec/GCMParameterSpec",
+                "(I[B)V",
+                &[
+                    jni::objects::JValue::Int(128),
+                    jni::objects::JValue::Object(&jni::objects::JObject::from(iv_array)),
+                ],
+            )
+            .map_err(android_jni_err)?;
+        env.call_method(
+            &cipher,
+            "init",
+            "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V",
+            &[
+                jni::objects::JValue::Int(2),
+                jni::objects::JValue::Object(&secret_key),
+                jni::objects::JValue::Object(&spec),
+            ],
+        )
+        .map_err(android_jni_err)?;
+        let input = env
+            .byte_array_from_slice(ciphertext)
+            .map_err(android_jni_err)?;
+        let plaintext = env
+            .call_method(
+                &cipher,
+                "doFinal",
+                "([B)[B",
+                &[jni::objects::JValue::Object(&jni::objects::JObject::from(
+                    input,
+                ))],
+            )
+            .map_err(android_jni_err)?
+            .l()
+            .map_err(android_jni_err)?;
+        env.convert_byte_array(jni::objects::JByteArray::from(plaintext))
+            .map_err(android_jni_err)
+    })
+}
+
+#[cfg(target_os = "android")]
+fn android_with_env<T, F>(f: F) -> SpResult<T>
+where
+    F: FnOnce(&mut jni::JNIEnv) -> SpResult<T>,
+{
+    use jni::JavaVM;
+
+    unsafe {
+        let ctx = ndk_context::android_context();
+        let vm_ptr = ctx.vm();
+        if vm_ptr.is_null() {
+            return Err(err_invalid("android vm unavailable"));
+        }
+        let vm = JavaVM::from_raw(vm_ptr as *mut _).map_err(android_jni_err)?;
+        let mut env = vm.attach_current_thread().map_err(android_jni_err)?;
+        f(&mut env)
+    }
+}
+
+#[cfg(target_os = "android")]
+fn android_cipher(env: &mut jni::JNIEnv) -> SpResult<jni::objects::JObject> {
+    let transformation = env
+        .new_string("AES/GCM/NoPadding")
+        .map_err(android_jni_err)?;
+    env.call_static_method(
+        "javax/crypto/Cipher",
+        "getInstance",
+        "(Ljava/lang/String;)Ljavax/crypto/Cipher;",
+        &[jni::objects::JValue::Object(&jni::objects::JObject::from(
+            transformation,
+        ))],
+    )
+    .map_err(android_jni_err)?
+    .l()
+    .map_err(android_jni_err)
+}
+
+#[cfg(target_os = "android")]
+fn android_keystore_secret_key(env: &mut jni::JNIEnv) -> SpResult<jni::objects::JObject> {
+    let alias = env.new_string(ANDROID_KEY_ALIAS).map_err(android_jni_err)?;
+    let provider = env.new_string("AndroidKeyStore").map_err(android_jni_err)?;
+    let keystore = env
+        .call_static_method(
+            "java/security/KeyStore",
+            "getInstance",
+            "(Ljava/lang/String;)Ljava/security/KeyStore;",
+            &[jni::objects::JValue::Object(&jni::objects::JObject::from(
+                provider,
+            ))],
+        )
+        .map_err(android_jni_err)?
+        .l()
+        .map_err(android_jni_err)?;
+    env.call_method(
+        &keystore,
+        "load",
+        "(Ljava/io/InputStream;[C)V",
+        &[
+            jni::objects::JValue::Object(&jni::objects::JObject::null()),
+            jni::objects::JValue::Object(&jni::objects::JObject::null()),
+        ],
+    )
+    .map_err(android_jni_err)?;
+    let has_alias = env
+        .call_method(
+            &keystore,
+            "containsAlias",
+            "(Ljava/lang/String;)Z",
+            &[jni::objects::JValue::Object(&jni::objects::JObject::from(
+                alias,
+            ))],
+        )
+        .map_err(android_jni_err)?
+        .z()
+        .map_err(android_jni_err)?;
+    if !has_alias {
+        android_generate_keystore_key(env)?;
+    }
+    let alias = env.new_string(ANDROID_KEY_ALIAS).map_err(android_jni_err)?;
+    let entry = env
+        .call_method(
+            &keystore,
+            "getEntry",
+            "(Ljava/lang/String;Ljava/security/KeyStore$ProtectionParameter;)Ljava/security/KeyStore$Entry;",
+            &[
+                jni::objects::JValue::Object(&jni::objects::JObject::from(alias)),
+                jni::objects::JValue::Object(&jni::objects::JObject::null()),
+            ],
+        )
+        .map_err(android_jni_err)?
+        .l()
+        .map_err(android_jni_err)?;
+    env.call_method(&entry, "getSecretKey", "()Ljavax/crypto/SecretKey;", &[])
+        .map_err(android_jni_err)?
+        .l()
+        .map_err(android_jni_err)
+}
+
+#[cfg(target_os = "android")]
+fn android_generate_keystore_key(env: &mut jni::JNIEnv) -> SpResult<()> {
+    let algorithm = env.new_string("AES").map_err(android_jni_err)?;
+    let provider = env.new_string("AndroidKeyStore").map_err(android_jni_err)?;
+    let generator = env
+        .call_static_method(
+            "javax/crypto/KeyGenerator",
+            "getInstance",
+            "(Ljava/lang/String;Ljava/lang/String;)Ljavax/crypto/KeyGenerator;",
+            &[
+                jni::objects::JValue::Object(&jni::objects::JObject::from(algorithm)),
+                jni::objects::JValue::Object(&jni::objects::JObject::from(provider)),
+            ],
+        )
+        .map_err(android_jni_err)?
+        .l()
+        .map_err(android_jni_err)?;
+    let purposes_encrypt = env
+        .get_static_field(
+            "android/security/keystore/KeyProperties",
+            "PURPOSE_ENCRYPT",
+            "I",
+        )
+        .map_err(android_jni_err)?
+        .i()
+        .map_err(android_jni_err)?;
+    let purposes_decrypt = env
+        .get_static_field(
+            "android/security/keystore/KeyProperties",
+            "PURPOSE_DECRYPT",
+            "I",
+        )
+        .map_err(android_jni_err)?
+        .i()
+        .map_err(android_jni_err)?;
+    let alias = env.new_string(ANDROID_KEY_ALIAS).map_err(android_jni_err)?;
+    let builder = env
+        .new_object(
+            "android/security/keystore/KeyGenParameterSpec$Builder",
+            "(Ljava/lang/String;I)V",
+            &[
+                jni::objects::JValue::Object(&jni::objects::JObject::from(alias)),
+                jni::objects::JValue::Int(purposes_encrypt | purposes_decrypt),
+            ],
+        )
+        .map_err(android_jni_err)?;
+    let block_modes = env
+        .new_object_array(1, "java/lang/String", jni::objects::JObject::null())
+        .map_err(android_jni_err)?;
+    let gcm = env.new_string("GCM").map_err(android_jni_err)?;
+    env.set_object_array_element(&block_modes, 0, gcm)
+        .map_err(android_jni_err)?;
+    env.call_method(
+        &builder,
+        "setBlockModes",
+        "([Ljava/lang/String;)Landroid/security/keystore/KeyGenParameterSpec$Builder;",
+        &[jni::objects::JValue::Object(&jni::objects::JObject::from(
+            block_modes,
+        ))],
+    )
+    .map_err(android_jni_err)?;
+    let paddings = env
+        .new_object_array(1, "java/lang/String", jni::objects::JObject::null())
+        .map_err(android_jni_err)?;
+    let no_padding = env.new_string("NoPadding").map_err(android_jni_err)?;
+    env.set_object_array_element(&paddings, 0, no_padding)
+        .map_err(android_jni_err)?;
+    env.call_method(
+        &builder,
+        "setEncryptionPaddings",
+        "([Ljava/lang/String;)Landroid/security/keystore/KeyGenParameterSpec$Builder;",
+        &[jni::objects::JValue::Object(&jni::objects::JObject::from(
+            paddings,
+        ))],
+    )
+    .map_err(android_jni_err)?;
+    env.call_method(
+        &builder,
+        "setKeySize",
+        "(I)Landroid/security/keystore/KeyGenParameterSpec$Builder;",
+        &[jni::objects::JValue::Int(256)],
+    )
+    .map_err(android_jni_err)?;
+    let spec = env
+        .call_method(
+            &builder,
+            "build",
+            "()Landroid/security/keystore/KeyGenParameterSpec;",
+            &[],
+        )
+        .map_err(android_jni_err)?
+        .l()
+        .map_err(android_jni_err)?;
+    env.call_method(
+        &generator,
+        "init",
+        "(Ljava/security/spec/AlgorithmParameterSpec;)V",
+        &[jni::objects::JValue::Object(&spec)],
+    )
+    .map_err(android_jni_err)?;
+    env.call_method(&generator, "generateKey", "()Ljavax/crypto/SecretKey;", &[])
+        .map_err(android_jni_err)?;
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn android_jni_err(err: impl std::fmt::Display) -> SpError {
+    SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("android keystore: {err}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    }
 }
 
 fn derive_argon2_key(password: &str, params: &KdfParams) -> SpResult<[u8; 32]> {
@@ -501,15 +942,91 @@ fn derive_argon2_key(password: &str, params: &KdfParams) -> SpResult<[u8; 32]> {
 }
 
 pub(crate) fn vault_dir() -> SpResult<PathBuf> {
+    if let Some(app) = APP_HANDLE.get() {
+        return app.path().app_data_dir().map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("resolve app data dir failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        });
+    }
     if let Some(proj) = ProjectDirs::from("com", "swiftpan", "SwiftPan") {
         return Ok(proj.data_dir().to_path_buf());
     }
-    // Fallbacks for platforms where ProjectDirs is unavailable (e.g., Android emulator)
     if let Ok(custom) = env::var("SWIFTPAN_DATA_DIR") {
         return Ok(PathBuf::from(custom));
     }
-    // Last resort: use temp dir within app sandbox; callers will create it lazily
     Ok(env::temp_dir().join("swiftpan"))
+}
+
+fn migrate_legacy_vault_dir() -> SpResult<()> {
+    let target_dir = vault_dir()?;
+    fs::create_dir_all(&target_dir).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("create app data dir failed: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    for legacy_dir in legacy_vault_dirs() {
+        if legacy_dir == target_dir || !legacy_dir.exists() {
+            continue;
+        }
+        migrate_dir_contents(&legacy_dir, &target_dir)?;
+    }
+    Ok(())
+}
+
+fn legacy_vault_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(proj) = ProjectDirs::from("com", "swiftpan", "SwiftPan") {
+        dirs.push(proj.data_dir().to_path_buf());
+    }
+    if let Ok(custom) = env::var("SWIFTPAN_DATA_DIR") {
+        dirs.push(PathBuf::from(custom));
+    }
+    dirs.push(env::temp_dir().join("swiftpan"));
+    dirs
+}
+
+fn migrate_dir_contents(from: &Path, to: &Path) -> SpResult<()> {
+    if !from.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(from).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("read legacy data dir failed: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })? {
+        let entry = entry.map_err(|e| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("read legacy dir entry failed: {e}"),
+            retry_after_ms: None,
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
+        let from_path = entry.path();
+        let to_path = to.join(entry.file_name());
+        if from_path.is_dir() {
+            fs::create_dir_all(&to_path).map_err(|e| SpError {
+                kind: ErrorKind::NotRetriable,
+                message: format!("create migrated dir failed: {e}"),
+                retry_after_ms: None,
+                context: None,
+                at: chrono::Utc::now().timestamp_millis(),
+            })?;
+            migrate_dir_contents(&from_path, &to_path)?;
+            continue;
+        }
+        if to_path.exists() {
+            continue;
+        }
+        let _ = fs::copy(&from_path, &to_path);
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -520,23 +1037,24 @@ struct BackendMemory {
 static STATE: Lazy<Mutex<BackendMemory>> = Lazy::new(|| Mutex::new(BackendMemory { creds: None }));
 
 fn current_state() -> BackendState {
-    // If poisoned, recover inner state instead of panicking
-    let g = match STATE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
+    let mem_bundle = match STATE.lock() {
+        Ok(guard) => guard.creds.clone(),
+        Err(poisoned) => poisoned.into_inner().creds.clone(),
     };
-    let dir_exists = vault_dir()
-        .ok()
-        .map(|d| d.join("vault.sp").exists())
-        .unwrap_or(false);
-    let is_credential_completed = g.creds.as_ref().map_or(false, |c| {
+    let disk_bundle = if mem_bundle.is_some() {
+        None
+    } else {
+        SpBackend::get_decrypted_bundle_if_unlocked().ok()
+    };
+    let bundle = mem_bundle.or(disk_bundle);
+    let is_credential_completed = bundle.as_ref().map_or(false, |c| {
         !c.r2.endpoint.is_empty()
             && !c.r2.access_key_id.is_empty()
             && !c.r2.secret_access_key.is_empty()
             && !c.r2.bucket.is_empty()
     });
     BackendState {
-        is_unlocked: g.creds.is_some() || dir_exists,
+        is_unlocked: bundle.is_some(),
         unlock_deadline_ms: None,
         device_id: "dev-removed".into(),
         is_credential_completed,

@@ -21,6 +21,7 @@ export type ListPage = {
     size?: number;
     last_modified_ms?: number;
     etag?: string;
+    thumbnail_key?: string;
     is_prefix: boolean;
     protected: boolean;
   }>;
@@ -146,6 +147,7 @@ export const api = {
         size?: number;
         last_modified_ms?: number;
         etag?: string;
+        thumbnail_key?: string;
         is_prefix: boolean;
         protected: boolean;
       }[]
@@ -156,6 +158,11 @@ export const api = {
     invokeBridge<string | null>("generate_thumbnail_and_upload", {
       key,
       source_path: sourcePath,
+    }),
+  thumbnail_get_cached_data: (objectKey: string, objectEtag?: string) =>
+    invokeBridge<string | null>("thumbnail_get_cached_data", {
+      objectKey,
+      objectEtag,
     }),
   share_generate: (params: {
     key: string;

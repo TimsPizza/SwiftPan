@@ -57,6 +57,32 @@ const getFileIcon = (filename: string) => {
   return <FileIcon className="text-gray-500" />;
 };
 
+function useThumbnailData(file: TFileItem) {
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setThumbUrl(null);
+    async function loadThumb() {
+      try {
+        const key = (file as any).thumbnailKey as string | undefined;
+        if (!key) return;
+        const data = await api.thumbnail_get_cached_data(file.id, file.etag);
+        if (!alive || !data) return;
+        setThumbUrl(data);
+      } catch (err) {
+        console.warn("thumbnail fetch failed", err);
+      }
+    }
+    void loadThumb();
+    return () => {
+      alive = false;
+    };
+  }, [file.etag, file.id, file.thumbnailKey]);
+
+  return thumbUrl;
+}
+
 export const MobileFileItem = ({
   file,
   onSelect,
@@ -68,26 +94,7 @@ export const MobileFileItem = ({
 }: FileItemCommonProps) => {
   const longPressTimerRef = useRef<number | null>(null);
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
-  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    async function loadThumb() {
-      try {
-        const key = (file as any).thumbnailKey as string | undefined;
-        if (!key) return;
-        const link = await api.share_generate({ key, ttl_secs: 600 });
-        if (!alive) return;
-        setThumbUrl(link.url);
-      } catch (err) {
-        console.warn("thumbnail link fetch failed", err);
-      }
-    }
-    loadThumb();
-    return () => {
-      alive = false;
-    };
-  }, [file]);
+  const thumbUrl = useThumbnailData(file);
 
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     const t = e.touches[0];
@@ -250,6 +257,7 @@ export const DesktopFileItem = ({
   onDelete,
   index = 0,
 }: DesktopFileItemProps) => {
+  const thumbUrl = useThumbnailData(file);
   return (
     <motion.tr
       key={file.id}
@@ -269,11 +277,11 @@ export const DesktopFileItem = ({
       </TableCell>
       <TableCell className="min-w-0 whitespace-normal!">
         <div className="flex min-w-0 items-center gap-3">
-          {(file as any).thumbnailKey ? (
+          {thumbUrl ? (
             <img
-              src={`data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='16' height='16' fill='%23d1d5db'/%3E%3C/svg%3E`}
+              src={thumbUrl}
               alt="thumb"
-              className="h-4 w-4 rounded-sm"
+              className="h-4 w-4 rounded-sm object-cover"
             />
           ) : (
             getFileIcon(file.filename)

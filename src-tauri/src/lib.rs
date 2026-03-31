@@ -60,6 +60,7 @@ pub fn run() {
             crate::bridge::delete_object,
             crate::bridge::ui_status_bar_height,
             crate::bridge::generate_thumbnail_and_upload,
+            crate::bridge::thumbnail_get_cached_data,
             // Android SAF helpers
             crate::bridge::android_pick_download_dir,
             crate::bridge::android_get_persisted_download_dir,
@@ -68,6 +69,12 @@ pub fn run() {
             crate::bridge::android_upload_from_uri,
         ])
         .setup(|app| {
+            crate::sp_backend::init(&app.handle()).map_err(|e| {
+                Box::<dyn std::error::Error>::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("backend init failed: {}", e.message),
+                ))
+            })?;
             // Initialize tracing-based file logger with simple rotation (4MB cap)
             crate::logger::init(app.handle().clone()).map_err(|e| {
                 Box::<dyn std::error::Error>::from(std::io::Error::new(

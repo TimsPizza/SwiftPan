@@ -33,6 +33,15 @@ pub struct TransferSnapshot {
     pub updated_at_ms: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ThumbnailCacheEntry {
+    pub object_key: String,
+    pub object_etag: Option<String>,
+    pub thumbnail_key: String,
+    pub data_url: String,
+    pub updated_at_ms: i64,
+}
+
 pub fn db_url() -> &'static str {
     DB_URL
 }
@@ -73,6 +82,22 @@ CREATE INDEX IF NOT EXISTS idx_transfer_snapshots_active
             sql: r#"
 ALTER TABLE transfer_snapshots
 ADD COLUMN last_fail_reason TEXT;
+            "#,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "create_thumbnail_cache",
+            sql: r#"
+CREATE TABLE IF NOT EXISTS thumbnail_cache (
+  object_key TEXT PRIMARY KEY NOT NULL,
+  object_etag TEXT,
+  thumbnail_key TEXT NOT NULL,
+  data_url TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_thumbnail_cache_updated
+  ON thumbnail_cache(updated_at_ms DESC);
             "#,
             kind: MigrationKind::Up,
         },
@@ -231,6 +256,78 @@ WHERE transfer_id = ?
     })
 }
 
+pub fn get_thumbnail_cache(object_key: &str) -> SpResult<Option<ThumbnailCacheEntry>> {
+    let object_key = object_key.to_string();
+    run_db(async move {
+        let pool = load_pool().await?;
+        let row = sqlx::query(
+            r#"
+SELECT object_key, object_etag, thumbnail_key, data_url, updated_at_ms
+FROM thumbnail_cache
+WHERE object_key = ?
+            "#,
+        )
+        .bind(object_key)
+        .fetch_optional(&pool)
+        .await
+        .map_err(db_err)?;
+        row.map(row_to_thumbnail_cache).transpose()
+    })
+}
+
+pub fn upsert_thumbnail_cache(entry: &ThumbnailCacheEntry) -> SpResult<()> {
+    run_db({
+        let entry = entry.clone();
+        async move {
+            let pool = load_pool().await?;
+            sqlx::query(
+                r#"
+INSERT INTO thumbnail_cache (
+  object_key,
+  object_etag,
+  thumbnail_key,
+  data_url,
+  updated_at_ms
+)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(object_key) DO UPDATE SET
+  object_etag = excluded.object_etag,
+  thumbnail_key = excluded.thumbnail_key,
+  data_url = excluded.data_url,
+  updated_at_ms = excluded.updated_at_ms
+                "#,
+            )
+            .bind(entry.object_key)
+            .bind(entry.object_etag)
+            .bind(entry.thumbnail_key)
+            .bind(entry.data_url)
+            .bind(entry.updated_at_ms)
+            .execute(&pool)
+            .await
+            .map_err(db_err)?;
+            Ok(())
+        }
+    })
+}
+
+pub fn delete_thumbnail_cache(object_key: &str) -> SpResult<()> {
+    let object_key = object_key.to_string();
+    run_db(async move {
+        let pool = load_pool().await?;
+        sqlx::query(
+            r#"
+DELETE FROM thumbnail_cache
+WHERE object_key = ?
+            "#,
+        )
+        .bind(object_key)
+        .execute(&pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    })
+}
+
 fn list_snapshots_with_clause(clause: &str) -> SpResult<Vec<TransferSnapshot>> {
     let clause = clause.to_string();
     run_db(async move {
@@ -303,6 +400,16 @@ fn row_to_snapshot(row: sqlx::sqlite::SqliteRow) -> SpResult<TransferSnapshot> {
         expected_etag: row.try_get("expected_etag").map_err(db_err)?,
         observed_etag: row.try_get("observed_etag").map_err(db_err)?,
         created_at_ms: row.try_get("created_at_ms").map_err(db_err)?,
+        updated_at_ms: row.try_get("updated_at_ms").map_err(db_err)?,
+    })
+}
+
+fn row_to_thumbnail_cache(row: sqlx::sqlite::SqliteRow) -> SpResult<ThumbnailCacheEntry> {
+    Ok(ThumbnailCacheEntry {
+        object_key: row.try_get("object_key").map_err(db_err)?,
+        object_etag: row.try_get("object_etag").map_err(db_err)?,
+        thumbnail_key: row.try_get("thumbnail_key").map_err(db_err)?,
+        data_url: row.try_get("data_url").map_err(db_err)?,
         updated_at_ms: row.try_get("updated_at_ms").map_err(db_err)?,
     })
 }

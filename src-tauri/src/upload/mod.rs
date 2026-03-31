@@ -804,49 +804,7 @@ async fn run_upload(
     paused: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
 ) -> SpResult<()> {
-    let src_basename = std::path::Path::new(&params.source_path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    let maybe_thumb_local: Option<String> = {
-        let s = settings::get();
-        if !s.upload_thumbnail {
-            None
-        } else {
-            let parent = std::path::Path::new(&params.source_path).parent();
-            if let Some(dir) = parent {
-                let thumb_name = format!("thumbnail_{}.jpg", src_basename);
-                crate::logger::info(
-                    "sp.backend",
-                    &format!(
-                        "upload_thumbnail=true; looking for local thumbnail '{}'",
-                        thumb_name
-                    ),
-                );
-                let p = dir.join(thumb_name);
-                match tokio::fs::metadata(&p).await {
-                    Ok(m) if m.is_file() => Some(p.to_string_lossy().to_string()),
-                    _ => {
-                        crate::logger::info(
-                            "sp.backend",
-                            &format!(
-                                "local thumbnail not found; skipping (path: {})",
-                                p.display()
-                            ),
-                        );
-                        None
-                    }
-                }
-            } else {
-                crate::logger::error(
-                    "sp.backend",
-                    &format!("error getting thumbnail parent dir: {}", params.source_path),
-                );
-                None
-            }
-        }
-    };
+    let should_upload_thumbnail = settings::get().upload_thumbnail;
     transition_upload(id, TransferStateEvent::Run(TransferPhase::PreparingSource))?;
     emit_upload(
         app,
@@ -988,27 +946,42 @@ async fn run_upload(
         at: now_ms(),
     })?;
 
-    // Optionally upload local thumbnail file in background (best-effort)
-    if let Some(local_thumb) = maybe_thumb_local.clone() {
+    // Optionally generate and upload thumbnail in background (best-effort).
+    if should_upload_thumbnail {
         let client2 = client.clone();
-        let thumb_key = format!("thumbnail_{}.jpg", params.key);
+        let source_path = params.source_path.clone();
+        let object_key = params.key.clone();
+        let thumb_key = crate::thumbnail::thumbnail_key_for(&params.key);
         tokio::spawn(async move {
-            if let Ok(mut f) = tokio::fs::File::open(&local_thumb).await {
-                let mut writer = match client2.op.writer(&thumb_key).await {
-                    Ok(w) => w,
-                    Err(_) => return,
-                };
-                let mut buf = vec![0u8; 512 * 1024];
-                loop {
-                    match f.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let _ = writer.write(buf[..n].to_vec()).await;
-                        }
-                        Err(_) => break,
+            match crate::thumbnail::generate_thumbnail_bytes(&source_path, 128, 16 * 1024).await {
+                Ok(Some(bytes)) => {
+                    if let Err(e) =
+                        r2_client::put_object_bytes(&client2, &thumb_key, bytes, None, false).await
+                    {
+                        crate::logger::warn(
+                            "upload",
+                            &format!("thumbnail upload failed for {}: {}", object_key, e.message),
+                        );
                     }
                 }
-                let _ = writer.close().await;
+                Ok(None) => {
+                    crate::logger::info(
+                        "upload",
+                        &format!(
+                            "thumbnail skipped for {}; unsupported file type",
+                            object_key
+                        ),
+                    );
+                }
+                Err(e) => {
+                    crate::logger::warn(
+                        "upload",
+                        &format!(
+                            "thumbnail generation failed for {}: {}",
+                            object_key, e.message
+                        ),
+                    );
+                }
             }
         });
     }

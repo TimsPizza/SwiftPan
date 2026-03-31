@@ -1,4 +1,16 @@
 use crate::types::*;
+use sha2::{Digest, Sha256};
+
+pub const THUMBNAIL_PREFIX: &str = "__thumbnail__/";
+
+pub fn thumbnail_key_for(object_key: &str) -> String {
+    let digest = Sha256::digest(object_key.as_bytes());
+    format!("{THUMBNAIL_PREFIX}{:x}.jpg", digest)
+}
+
+pub fn is_thumbnail_key(key: &str) -> bool {
+    key.starts_with(THUMBNAIL_PREFIX)
+}
 
 // Public entry: generate JPEG thumbnail bytes under given constraints.
 // - max_px: bounding box size (e.g., 128)

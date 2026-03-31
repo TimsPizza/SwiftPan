@@ -6,6 +6,7 @@ export type FileItem = {
   filename: string;
   size: number;
   uploadedAt: number; // ms
+  etag?: string;
   originalName: string; // full key
   thumbnailKey?: string; // optional thumbnail object key
 };
