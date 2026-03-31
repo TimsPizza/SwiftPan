@@ -29,7 +29,7 @@ impl Default for AppSettings {
             log_level: "info".into(),
             max_concurrency: 2,
             default_download_dir: None,
-            upload_thumbnail: false,
+            upload_thumbnail: true,
             android_tree_uri: None,
         }
     }

@@ -113,6 +113,27 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+#[cfg(target_os = "android")]
+fn android_thumbnail_temp_path(transfer_id: &str, object_key: &str) -> SpResult<PathBuf> {
+    let mut dir = crate::sp_backend::vault_dir()?;
+    dir.push("uploads");
+    dir.push("thumbnail_staging");
+    std::fs::create_dir_all(&dir).map_err(|e| SpError {
+        kind: ErrorKind::NotRetriable,
+        message: format!("create thumbnail staging dir: {e}"),
+        retry_after_ms: None,
+        context: None,
+        at: now_ms(),
+    })?;
+    let ext = std::path::Path::new(object_key)
+        .extension()
+        .and_then(|v| v.to_str())
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or("bin");
+    dir.push(format!("{transfer_id}.{ext}"));
+    Ok(dir)
+}
+
 fn state_from_transfer(transfer: &UTransfer) -> TransferState {
     TransferState {
         lifecycle: transfer.lifecycle_state.clone(),
@@ -548,6 +569,7 @@ pub async fn start_upload_android_uri(
     });
     tokio::spawn(async move {
         let res = async {
+            let should_upload_thumbnail = settings::get().upload_thumbnail;
             transition_upload(
                 &id_spawn,
                 TransferStateEvent::Run(TransferPhase::PreparingSource),
@@ -703,6 +725,78 @@ pub async fn start_upload_android_uri(
                 context: None,
                 at: now_ms(),
             })?;
+            if should_upload_thumbnail {
+                let thumb_temp_path = android_thumbnail_temp_path(&id_spawn, &key)?;
+                let thumb_temp = thumb_temp_path.to_string_lossy().to_string();
+                let thumb_key = crate::thumbnail::thumbnail_key_for(&key);
+                let copy_res = crate::bridge::android_fs_copy(
+                    app_spawn.clone(),
+                    crate::bridge::AndroidFsCopyParams {
+                        direction: "uri_to_sandbox".into(),
+                        local_path: thumb_temp.clone(),
+                        tree_uri: None,
+                        relative_path: None,
+                        mime: None,
+                        uri: Some(uri.clone()),
+                    },
+                )
+                .await;
+                match copy_res {
+                    Ok(()) => {
+                        match crate::thumbnail::generate_thumbnail_bytes(
+                            &thumb_temp,
+                            128,
+                            16 * 1024,
+                        )
+                        .await
+                        {
+                            Ok(Some(bytes)) => {
+                                if let Err(e) = r2_client::put_object_bytes(
+                                    &client, &thumb_key, bytes, None, false,
+                                )
+                                .await
+                                {
+                                    crate::logger::warn(
+                                        "upload",
+                                        &format!(
+                                            "android thumbnail upload failed for {}: {}",
+                                            key, e.message
+                                        ),
+                                    );
+                                }
+                            }
+                            Ok(None) => {
+                                crate::logger::info(
+                                    "upload",
+                                    &format!(
+                                        "android thumbnail skipped for {}; unsupported file type",
+                                        key
+                                    ),
+                                );
+                            }
+                            Err(e) => {
+                                crate::logger::warn(
+                                    "upload",
+                                    &format!(
+                                        "android thumbnail generation failed for {}: {}",
+                                        key, e.message
+                                    ),
+                                );
+                            }
+                        }
+                        let _ = tokio::fs::remove_file(&thumb_temp).await;
+                    }
+                    Err(e) => {
+                        crate::logger::warn(
+                            "upload",
+                            &format!(
+                                "android thumbnail source materialize failed for {}: {}",
+                                key, e.message
+                            ),
+                        );
+                    }
+                }
+            }
             transition_upload(&id_spawn, TransferStateEvent::Complete)?;
             emit_upload(
                 &app_spawn,

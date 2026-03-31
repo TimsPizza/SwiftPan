@@ -610,7 +610,7 @@ fn android_keystore_encrypt(plaintext: &[u8]) -> SpResult<(Vec<u8>, Vec<u8>)> {
             "(ILjava/security/Key;)V",
             &[
                 jni::objects::JValue::Int(1),
-                jni::objects::JValue::Object(&secret_key),
+                jni::objects::JValue::Object(secret_key.as_obj()),
             ],
         )
         .map_err(android_jni_err)?;
@@ -665,7 +665,7 @@ fn android_keystore_decrypt(iv: &[u8], ciphertext: &[u8]) -> SpResult<Vec<u8>> {
             "(ILjava/security/Key;Ljava/security/spec/AlgorithmParameterSpec;)V",
             &[
                 jni::objects::JValue::Int(2),
-                jni::objects::JValue::Object(&secret_key),
+                jni::objects::JValue::Object(secret_key.as_obj()),
                 jni::objects::JValue::Object(&spec),
             ],
         )
@@ -710,25 +710,27 @@ where
 }
 
 #[cfg(target_os = "android")]
-fn android_cipher(env: &mut jni::JNIEnv) -> SpResult<jni::objects::JObject> {
+fn android_cipher(env: &mut jni::JNIEnv) -> SpResult<jni::objects::GlobalRef> {
     let transformation = env
         .new_string("AES/GCM/NoPadding")
         .map_err(android_jni_err)?;
-    env.call_static_method(
-        "javax/crypto/Cipher",
-        "getInstance",
-        "(Ljava/lang/String;)Ljavax/crypto/Cipher;",
-        &[jni::objects::JValue::Object(&jni::objects::JObject::from(
-            transformation,
-        ))],
-    )
-    .map_err(android_jni_err)?
-    .l()
-    .map_err(android_jni_err)
+    let cipher = env
+        .call_static_method(
+            "javax/crypto/Cipher",
+            "getInstance",
+            "(Ljava/lang/String;)Ljavax/crypto/Cipher;",
+            &[jni::objects::JValue::Object(&jni::objects::JObject::from(
+                transformation,
+            ))],
+        )
+        .map_err(android_jni_err)?
+        .l()
+        .map_err(android_jni_err)?;
+    env.new_global_ref(cipher).map_err(android_jni_err)
 }
 
 #[cfg(target_os = "android")]
-fn android_keystore_secret_key(env: &mut jni::JNIEnv) -> SpResult<jni::objects::JObject> {
+fn android_keystore_secret_key(env: &mut jni::JNIEnv) -> SpResult<jni::objects::GlobalRef> {
     let alias = env.new_string(ANDROID_KEY_ALIAS).map_err(android_jni_err)?;
     let provider = env.new_string("AndroidKeyStore").map_err(android_jni_err)?;
     let keystore = env
@@ -782,10 +784,12 @@ fn android_keystore_secret_key(env: &mut jni::JNIEnv) -> SpResult<jni::objects::
         .map_err(android_jni_err)?
         .l()
         .map_err(android_jni_err)?;
-    env.call_method(&entry, "getSecretKey", "()Ljavax/crypto/SecretKey;", &[])
+    let secret_key = env
+        .call_method(&entry, "getSecretKey", "()Ljavax/crypto/SecretKey;", &[])
         .map_err(android_jni_err)?
         .l()
-        .map_err(android_jni_err)
+        .map_err(android_jni_err)?;
+    env.new_global_ref(secret_key).map_err(android_jni_err)
 }
 
 #[cfg(target_os = "android")]

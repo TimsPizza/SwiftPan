@@ -381,13 +381,10 @@ pub async fn android_fs_copy(app: tauri::AppHandle, params: AndroidFsCopyParams)
             }
             "uri_to_sandbox" => {
                 let uri = params.uri.ok_or_else(|| err_invalid("uri required"))?;
-                let file_uri = FileUri::from_str(&uri).map_err(|e| SpError {
-                    kind: ErrorKind::NotRetriable,
-                    message: format!("uri parse: {e}"),
-                    retry_after_ms: None,
-                    context: None,
-                    at: chrono::Utc::now().timestamp_millis(),
-                })?;
+                let file_uri = FileUri {
+                    uri,
+                    document_top_tree_uri: None,
+                };
                 let rs = api
                     .open_file(&file_uri, FileAccessMode::Read)
                     .map_err(|e| SpError {

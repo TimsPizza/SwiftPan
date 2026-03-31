@@ -425,7 +425,7 @@ export default function SettingsPage() {
               onChange={(e) => setMaxConcurrency(Number(e.target.value) || 1)}
             />
 
-            <label className="text-sm">{`Upload thumbnail alongside file (Not implementd)`}</label>
+            <label className="text-sm">{`Upload thumbnail alongside supported file`}</label>
             <div>
               <Switch
                 id="upload-thumb"
