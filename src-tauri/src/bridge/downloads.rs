@@ -6,7 +6,6 @@
 //! or unrelated command domains.
 
 use crate::download::{DownloadStatus, NewDownloadParams};
-use crate::r2_client;
 use crate::sp_backend::SpBackend;
 use crate::types::{err_not_implemented, ErrorKind, SpError, SpResult};
 use tokio::io::AsyncWriteExt;
@@ -81,10 +80,18 @@ pub async fn download_sandbox_dir() -> SpResult<String> {
 #[tauri::command]
 pub async fn download_now(key: String, dest_path: String) -> SpResult<()> {
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
-    let bytes = r2_client::get_object_bytes(&client, &key)
+    let operator = crate::storage::build_operator(&bundle.r2).await?;
+    let bytes = operator
+        .read(&key)
         .await
-        .map(|(bytes, _)| bytes)?;
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("GetObject: {error}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })?;
     let path = {
         let raw = dest_path.trim();
         let raw = raw.strip_prefix("file://").unwrap_or(raw);
