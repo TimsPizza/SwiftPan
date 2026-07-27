@@ -175,6 +175,18 @@ function gitTagExists(tag) {
   return res.status === 0;
 }
 
+function gitLocalBranchExists(branch) {
+  const res = spawnSync(
+    "git",
+    ["show-ref", "--verify", `refs/heads/${branch}`],
+    {
+      cwd: repoRoot,
+      stdio: "ignore",
+    },
+  );
+  return res.status === 0;
+}
+
 function getBetaTagNumbers(baseVersion) {
   const res = spawnSync("git", ["tag", "--list", `v${baseVersion}-beta.*`], {
     cwd: repoRoot,
@@ -261,6 +273,7 @@ function nextVersion(current, type) {
 const pkgPath = path.join(repoRoot, "package.json");
 const tauriConfPath = path.join(repoRoot, "src-tauri", "tauri.conf.json");
 const cargoPath = path.join(repoRoot, "src-tauri", "Cargo.toml");
+const cargoLockPath = path.join(repoRoot, "src-tauri", "Cargo.lock");
 
 const pkg = readJson(pkgPath);
 const current = pkg.version;
@@ -304,11 +317,38 @@ if (!/\nversion\s*=\s*"/.test(rest)) {
 cargo = before + rest;
 
 if (dryRun) {
-  log("[dry-run] Would write package.json, tauri.conf.json, Cargo.toml");
+  log(
+    "[dry-run] Would write package.json, tauri.conf.json, Cargo.toml, Cargo.lock",
+  );
 } else {
   writeJson(pkgPath, pkg);
   writeJson(tauriConfPath, tauriConf);
   writeText(cargoPath, cargo);
+
+  // Cargo.lock records the root package version as well as dependencies.
+  // Refresh it explicitly so the release commit cannot race rust-analyzer or
+  // fail CI when cargo is later invoked with --locked.
+  exec(
+    "cargo",
+    [
+      "update",
+      "--package",
+      "swift-pan",
+      "--offline",
+      "--manifest-path",
+      cargoPath,
+    ],
+    { cwd: repoRoot },
+  );
+
+  const lockedPackage = readText(cargoLockPath).match(
+    /\[\[package\]\]\s+name = "swift-pan"\s+version = "([^"]+)"/,
+  );
+  if (!lockedPackage || lockedPackage[1] !== manifestVersion) {
+    fail(
+      `Cargo.lock has swift-pan ${lockedPackage?.[1] ?? "missing"}; expected ${manifestVersion}`,
+    );
+  }
 }
 
 // Git commit and tag
@@ -321,6 +361,7 @@ if (!dryRun) {
     "package.json",
     "src-tauri/tauri.conf.json",
     "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock",
   ]);
   // Create commit only if there are staged changes
   const diffCheck = spawnSync("git", ["diff", "--cached", "--quiet"]);
@@ -332,7 +373,7 @@ if (!dryRun) {
 
   // Create or move tag
   // If tag exists locally, delete and recreate to current HEAD
-  const tagExists = tryExec("git", ["rev-parse", "--verify", tag]);
+  const tagExists = gitTagExists(tag);
   if (tagExists) {
     log(`Tag ${tag} exists, updating to current HEAD`);
     exec("git", ["tag", "-d", tag]);
@@ -347,11 +388,7 @@ if (!dryRun) {
     // Create/update release branch
     const releaseBranch = `release-${tagVersion}`;
     // Create or update local branch pointing to HEAD
-    const branchExists = tryExec("git", [
-      "show-ref",
-      "--verify",
-      `refs/heads/${releaseBranch}`,
-    ]);
+    const branchExists = gitLocalBranchExists(releaseBranch);
     if (branchExists) {
       // Move branch to current HEAD (fast-forward or reset) without checkout
       exec("git", ["branch", "-f", releaseBranch, "HEAD"]);
