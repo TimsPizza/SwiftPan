@@ -152,3 +152,6 @@ pub mod usage;
 
 #[cfg(test)]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+mod integration_tests;

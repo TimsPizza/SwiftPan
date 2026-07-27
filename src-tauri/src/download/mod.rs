@@ -30,6 +30,14 @@ use policy::*;
 use runtime::*;
 use target::*;
 
+#[cfg(test)]
+pub(crate) use engine::{
+    download_to_stage as download_to_stage_for_integration,
+    DownloadControl as IntegrationDownloadControl,
+    DownloadEngineObserver as IntegrationDownloadObserver,
+    DownloadEngineRequest as IntegrationDownloadRequest,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewDownloadParams {
     pub key: String,

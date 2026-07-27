@@ -16,20 +16,20 @@ use std::sync::{
 };
 use tokio::io::AsyncReadExt;
 
-pub(super) struct UploadEngineRequest {
-    pub(super) key: String,
-    pub(super) source_path: PathBuf,
-    pub(super) part_size: u64,
-    pub(super) content_type: Option<String>,
-    pub(super) content_disposition: Option<String>,
+pub(crate) struct UploadEngineRequest {
+    pub(crate) key: String,
+    pub(crate) source_path: PathBuf,
+    pub(crate) part_size: u64,
+    pub(crate) content_type: Option<String>,
+    pub(crate) content_disposition: Option<String>,
 }
 
-pub(super) struct UploadControl {
-    pub(super) paused: Arc<AtomicBool>,
-    pub(super) cancelled: Arc<AtomicBool>,
+pub(crate) struct UploadControl {
+    pub(crate) paused: Arc<AtomicBool>,
+    pub(crate) cancelled: Arc<AtomicBool>,
 }
 
-pub(super) trait UploadEngineObserver {
+pub(crate) trait UploadEngineObserver {
     fn uploading(&mut self) -> SpResult<()>;
     fn paused(&mut self) -> SpResult<()>;
     fn resumed(&mut self) -> SpResult<()>;
@@ -38,7 +38,7 @@ pub(super) trait UploadEngineObserver {
     fn cancelled(&mut self) -> SpResult<()>;
 }
 
-pub(super) async fn upload_file(
+pub(crate) async fn upload_file(
     operator: &Operator,
     request: UploadEngineRequest,
     control: UploadControl,

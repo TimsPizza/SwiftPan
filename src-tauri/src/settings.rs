@@ -3,7 +3,7 @@ use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,7 +47,11 @@ fn load_from_disk() -> AppSettings {
         Ok(p) => p,
         Err(_) => return AppSettings::default(),
     };
-    match fs::read(&p) {
+    load_from_path(&p)
+}
+
+pub(crate) fn load_from_path(path: &Path) -> AppSettings {
+    match fs::read(path) {
         Ok(bytes) => match serde_json::from_slice::<AppSettings>(&bytes) {
             Ok(s) => s,
             Err(_) => AppSettings::default(),
@@ -58,21 +62,25 @@ fn load_from_disk() -> AppSettings {
 
 fn save_to_disk(s: &AppSettings) -> SpResult<()> {
     let p = settings_path()?;
-    if let Some(parent) = p.parent() {
+    save_to_path(&p, s)
+}
+
+pub(crate) fn save_to_path(path: &Path, settings: &AppSettings) -> SpResult<()> {
+    if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     crate::logger::info(
         "settings",
-        &format!("saving settings {} to: {}", s, p.display()),
+        &format!("saving settings {} to: {}", settings, path.display()),
     );
-    let data = serde_json::to_vec_pretty(s).map_err(|e| SpError {
+    let data = serde_json::to_vec_pretty(settings).map_err(|e| SpError {
         kind: ErrorKind::NotRetriable,
         message: format!("serialize settings failed: {e}"),
         retry_after_ms: None,
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
     })?;
-    fs::write(&p, data).map_err(|e| SpError {
+    fs::write(path, data).map_err(|e| SpError {
         kind: ErrorKind::NotRetriable,
         message: format!("write settings failed: {e}"),
         retry_after_ms: None,

@@ -16,25 +16,25 @@ use std::sync::{
 };
 use tokio::io::AsyncWriteExt;
 
-pub(super) struct DownloadEngineRequest {
-    pub(super) key: String,
-    pub(super) temp_path: PathBuf,
-    pub(super) chunk_size: u64,
-    pub(super) expected_etag: Option<String>,
-    pub(super) recorded_bytes_done: u64,
+pub(crate) struct DownloadEngineRequest {
+    pub(crate) key: String,
+    pub(crate) temp_path: PathBuf,
+    pub(crate) chunk_size: u64,
+    pub(crate) expected_etag: Option<String>,
+    pub(crate) recorded_bytes_done: u64,
 }
 
-pub(super) struct DownloadControl {
-    pub(super) paused: Arc<AtomicBool>,
-    pub(super) cancelled: Arc<AtomicBool>,
+pub(crate) struct DownloadControl {
+    pub(crate) paused: Arc<AtomicBool>,
+    pub(crate) cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
-pub(super) struct DownloadEngineOutput {
-    pub(super) total: u64,
+pub(crate) struct DownloadEngineOutput {
+    pub(crate) total: u64,
 }
 
-pub(super) trait DownloadEngineObserver {
+pub(crate) trait DownloadEngineObserver {
     fn remote_metadata(&mut self, total: u64, observed_etag: Option<&str>) -> SpResult<()>;
     fn source_changed(&mut self) -> SpResult<()>;
     fn download_started(&mut self, offset: u64) -> SpResult<()>;
@@ -44,7 +44,7 @@ pub(super) trait DownloadEngineObserver {
     fn cancelled(&mut self) -> SpResult<()>;
 }
 
-pub(super) async fn download_to_stage(
+pub(crate) async fn download_to_stage(
     operator: &Operator,
     request: DownloadEngineRequest,
     control: DownloadControl,

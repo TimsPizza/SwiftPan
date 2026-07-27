@@ -1,9 +1,9 @@
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-const STATIC_SHARE_PATH: &str = "analytics/static/share.json";
+pub(crate) const STATIC_SHARE_PATH: &str = "analytics/static/share.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShareParams {
@@ -46,11 +46,20 @@ async fn load_ledger(
     client: &crate::r2_client::R2Client,
     force_refresh: bool,
 ) -> SpResult<ShareLedger> {
+    let local_cache = cache_path().ok();
+    load_ledger_with_cache(client, force_refresh, local_cache.as_deref()).await
+}
+
+pub(crate) async fn load_ledger_with_cache(
+    client: &crate::r2_client::R2Client,
+    force_refresh: bool,
+    local_cache: Option<&Path>,
+) -> SpResult<ShareLedger> {
     // Try local cache if not forced and fresh within 24h
     if !force_refresh {
-        if let Ok(p) = cache_path() {
+        if let Some(p) = local_cache {
             if p.exists() {
-                if let Ok(bytes) = fs::read(&p) {
+                if let Ok(bytes) = fs::read(p) {
                     if let Ok(v) = serde_json::from_slice::<ShareLedger>(&bytes) {
                         let age = now_ms().saturating_sub(v.updated_at_ms);
                         if age < 24 * 60 * 60 * 1000 {
@@ -69,16 +78,25 @@ async fn load_ledger(
     // Update cache timestamp and persist locally
     let mut v = remote;
     v.updated_at_ms = now_ms();
-    if let Ok(p) = cache_path() {
+    if let Some(p) = local_cache {
         if let Some(parent) = p.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let _ = fs::write(&p, serde_json::to_vec(&v).unwrap_or_default());
+        let _ = fs::write(p, serde_json::to_vec(&v).unwrap_or_default());
     }
     Ok(v)
 }
 
 async fn save_ledger(client: &crate::r2_client::R2Client, ledger: &ShareLedger) -> SpResult<()> {
+    let local_cache = cache_path().ok();
+    save_ledger_with_cache(client, ledger, local_cache.as_deref()).await
+}
+
+pub(crate) async fn save_ledger_with_cache(
+    client: &crate::r2_client::R2Client,
+    ledger: &ShareLedger,
+    local_cache: Option<&Path>,
+) -> SpResult<()> {
     let mut v = ledger.clone();
     v.updated_at_ms = now_ms();
     let bytes = serde_json::to_vec(&v).map_err(|e| SpError {
@@ -90,13 +108,20 @@ async fn save_ledger(client: &crate::r2_client::R2Client, ledger: &ShareLedger) 
     })?;
     crate::r2_client::put_object_bytes(client, STATIC_SHARE_PATH, bytes, None, false).await?;
     // save cache
-    if let Ok(p) = cache_path() {
+    if let Some(p) = local_cache {
         if let Some(parent) = p.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let _ = fs::write(&p, serde_json::to_vec(&v).unwrap_or_default());
+        let _ = fs::write(p, serde_json::to_vec(&v).unwrap_or_default());
     }
     Ok(())
+}
+
+pub(crate) fn prepend_share_entry(ledger: &mut ShareLedger, entry: ShareEntry) {
+    ledger.items.insert(0, entry);
+    if ledger.items.len() > 1000 {
+        ledger.items.truncate(1000);
+    }
 }
 
 pub async fn generate_share_link(params: ShareParams) -> SpResult<ShareLink> {
@@ -120,11 +145,7 @@ pub async fn generate_share_link(params: ShareParams) -> SpResult<ShareLink> {
         ttl_secs: params.ttl_secs,
         download_filename: params.download_filename.clone(),
     };
-    ledger.items.insert(0, entry);
-    // Cap length to avoid unbounded growth
-    if ledger.items.len() > 1000 {
-        ledger.items.truncate(1000);
-    }
+    prepend_share_entry(&mut ledger, entry);
     let _ = save_ledger(&client, &ledger).await;
     Ok(ShareLink { url, expires_at_ms })
 }

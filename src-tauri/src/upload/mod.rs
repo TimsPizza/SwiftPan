@@ -27,6 +27,13 @@ use metadata::*;
 use runtime::*;
 use stream::*;
 
+#[cfg(test)]
+pub(crate) use engine::{
+    upload_file as upload_file_for_integration, UploadControl as IntegrationUploadControl,
+    UploadEngineObserver as IntegrationUploadObserver,
+    UploadEngineRequest as IntegrationUploadRequest,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewUploadParams {
     pub key: String,
