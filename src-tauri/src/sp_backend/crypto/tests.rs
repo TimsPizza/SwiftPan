@@ -1,4 +1,5 @@
 use super::*;
+use crate::sp_backend::BackendPackage;
 
 fn lightweight_kdf(salt: [u8; 16]) -> KdfParams {
     KdfParams {
