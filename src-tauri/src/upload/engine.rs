@@ -44,6 +44,16 @@ pub(crate) async fn upload_file(
     control: UploadControl,
     observer: &mut impl UploadEngineObserver,
 ) -> SpResult<()> {
+    if request.part_size == 0 {
+        return Err(SpError {
+            kind: ErrorKind::NotRetriable,
+            message: "upload part size must be greater than zero".into(),
+            retry_after_ms: None,
+            context: None,
+            at: now_ms(),
+        });
+    }
+
     let mut file = tokio::fs::File::open(&request.source_path)
         .await
         .map_err(|error| SpError {
@@ -88,7 +98,13 @@ pub(crate) async fn upload_file(
                 observer.paused()?;
                 was_paused = true;
             }
+            if control.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        if control.cancelled.load(Ordering::Relaxed) {
+            break;
         }
         if was_paused {
             observer.resumed()?;
@@ -119,8 +135,7 @@ pub(crate) async fn upload_file(
     }
 
     if control.cancelled.load(Ordering::Relaxed) {
-        let _ = writer.close().await;
-        let _ = operator.delete(&request.key).await;
+        let _ = writer.abort().await;
         observer.cancelled()?;
         return Err(cancelled_error());
     }

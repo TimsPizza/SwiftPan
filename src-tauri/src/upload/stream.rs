@@ -12,9 +12,6 @@ use tokio::sync::mpsc;
 
 pub(super) struct StreamUploadRequest {
     pub(super) key: String,
-    // Contract input pinned by red tests; enforcement belongs to the follow-up
-    // behavior fix, not this test-only change.
-    #[allow(dead_code)]
     pub(super) expected_bytes: u64,
     pub(super) content_type: Option<String>,
     pub(super) content_disposition: Option<String>,
@@ -54,6 +51,8 @@ pub(super) async fn upload_stream(
 
     let mut was_paused = false;
     let mut part_number = 1;
+    let mut bytes_received = 0u64;
+    let mut explicitly_finished = false;
     while let Some(message) = receiver.recv().await {
         if control.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             break;
@@ -63,7 +62,13 @@ pub(super) async fn upload_stream(
                 observer.paused()?;
                 was_paused = true;
             }
+            if control.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        if control.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
         }
         if was_paused {
             observer.resumed()?;
@@ -73,6 +78,19 @@ pub(super) async fn upload_stream(
         match message {
             Some(bytes) => {
                 let len = bytes.len() as u64;
+                if len == 0 {
+                    continue;
+                }
+                let next_total = match bytes_received.checked_add(len) {
+                    Some(total) if total <= request.expected_bytes => total,
+                    _ => {
+                        let _ = writer.abort().await;
+                        return Err(stream_protocol_error(format!(
+                            "stream exceeds declared length of {} bytes",
+                            request.expected_bytes
+                        )));
+                    }
+                };
                 writer.write(bytes).await.map_err(|error| SpError {
                     kind: ErrorKind::RetryableNet,
                     message: format!("writer write: {error}"),
@@ -80,16 +98,34 @@ pub(super) async fn upload_stream(
                     context: None,
                     at: now_ms(),
                 })?;
+                bytes_received = next_total;
                 observer.part_done(part_number, len)?;
                 part_number += 1;
             }
-            None => break,
+            None => {
+                explicitly_finished = true;
+                break;
+            }
         }
     }
 
     if control.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = writer.abort().await;
         observer.cancelled()?;
         return Err(cancelled_error());
+    }
+    if !explicitly_finished {
+        let _ = writer.abort().await;
+        return Err(stream_protocol_error(
+            "stream sender disconnected before explicit finish",
+        ));
+    }
+    if bytes_received != request.expected_bytes {
+        let _ = writer.abort().await;
+        return Err(stream_protocol_error(format!(
+            "stream ended after {bytes_received} bytes; expected {}",
+            request.expected_bytes
+        )));
     }
 
     observer.finalizing()?;
@@ -100,4 +136,14 @@ pub(super) async fn upload_stream(
         context: None,
         at: now_ms(),
     })
+}
+
+fn stream_protocol_error(message: impl Into<String>) -> SpError {
+    SpError {
+        kind: ErrorKind::NotRetriable,
+        message: message.into(),
+        retry_after_ms: None,
+        context: None,
+        at: now_ms(),
+    }
 }

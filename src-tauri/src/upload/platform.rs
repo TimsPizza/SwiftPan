@@ -122,7 +122,13 @@ pub(super) async fn start_upload_android_uri(
                         );
                         was_paused = true;
                     }
+                    if cancelled.load(Ordering::Relaxed) {
+                        break;
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
                 }
                 if was_paused {
                     transition_upload(
@@ -167,8 +173,7 @@ pub(super) async fn start_upload_android_uri(
             }
 
             if cancelled.load(Ordering::Relaxed) {
-                let _ = writer.close().await;
-                let _ = operator.delete(&key).await;
+                let _ = writer.abort().await;
                 transition_upload(&task_id, TransferStateEvent::CancelConfirm)?;
                 emit_upload(
                     &task_app,

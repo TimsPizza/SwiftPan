@@ -61,14 +61,15 @@ pub(crate) async fn download_to_stage(
     let observed_etag = head.etag().map(str::to_string);
     observer.remote_metadata(total, observed_etag.as_deref())?;
 
-    if let (Some(expected), Some(observed)) =
-        (request.expected_etag.as_ref(), observed_etag.as_ref())
-    {
-        if expected != observed {
+    if let Some(expected) = request.expected_etag.as_ref() {
+        if observed_etag.as_ref() != Some(expected) {
             observer.source_changed()?;
             return Err(SpError {
                 kind: ErrorKind::SourceChanged,
-                message: "ETag mismatch".into(),
+                message: match observed_etag {
+                    Some(_) => "ETag mismatch".into(),
+                    None => "remote source omitted the required ETag".into(),
+                },
                 retry_after_ms: None,
                 context: None,
                 at: now_ms(),
@@ -105,6 +106,13 @@ pub(crate) async fn download_to_stage(
             let _ = tokio::fs::remove_file(&part_path).await;
             offset = 0;
         }
+        // A full-length partial file is not proof that its bytes belong to the
+        // current object. Without a committed final rename, restart the last
+        // step instead of publishing unverified data.
+        if total > 0 && offset == total {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            offset = 0;
+        }
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -123,7 +131,7 @@ pub(crate) async fn download_to_stage(
         let mut was_paused = false;
         while offset < total {
             if control.cancelled.load(Ordering::Relaxed) {
-                return cancel_download(&part_path, &request.temp_path, observer).await;
+                return cancel_download(&part_path, observer).await;
             }
             while control.paused.load(Ordering::Relaxed) {
                 if !was_paused {
@@ -131,7 +139,7 @@ pub(crate) async fn download_to_stage(
                     was_paused = true;
                 }
                 if control.cancelled.load(Ordering::Relaxed) {
-                    return cancel_download(&part_path, &request.temp_path, observer).await;
+                    return cancel_download(&part_path, observer).await;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
@@ -155,7 +163,13 @@ pub(crate) async fn download_to_stage(
                     at: now_ms(),
                 })?;
             if data.is_empty() {
-                break;
+                return Err(SpError {
+                    kind: ErrorKind::RetryableNet,
+                    message: format!("unexpected EOF at byte {offset} of {total}"),
+                    retry_after_ms: Some(500),
+                    context: None,
+                    at: now_ms(),
+                });
             }
             let chunk_bytes = data.to_bytes();
             file.write_all(&chunk_bytes)
@@ -173,7 +187,7 @@ pub(crate) async fn download_to_stage(
 
         file.flush().await.ok();
         if control.cancelled.load(Ordering::Relaxed) {
-            return cancel_download(&part_path, &request.temp_path, observer).await;
+            return cancel_download(&part_path, observer).await;
         }
         tokio::fs::rename(&part_path, &request.temp_path)
             .await
@@ -191,11 +205,9 @@ pub(crate) async fn download_to_stage(
 
 async fn cancel_download(
     part_path: &std::path::Path,
-    temp_path: &std::path::Path,
     observer: &mut impl DownloadEngineObserver,
 ) -> SpResult<DownloadEngineOutput> {
     let _ = tokio::fs::remove_file(part_path).await;
-    let _ = tokio::fs::remove_file(temp_path).await;
     observer.cancelled()?;
     Err(cancelled_error())
 }
