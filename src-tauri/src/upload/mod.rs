@@ -413,6 +413,7 @@ pub async fn start_upload_stream(
                 &operator,
                 StreamUploadRequest {
                     key: params.key,
+                    expected_bytes: params.bytes_total,
                     content_type: params.content_type,
                     content_disposition: params.content_disposition,
                 },

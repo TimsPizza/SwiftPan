@@ -1,6 +1,7 @@
 use super::super::*;
-use crate::test_support::patterned_bytes;
+use crate::test_support::{limit_read_responses, patterned_bytes, report_etag};
 use opendal::services::Memory;
+use sha2::{Digest, Sha256};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -242,4 +243,200 @@ async fn cancellation_removes_staged_artifacts_and_notifies_observer() {
     assert!(observer.cancelled);
     assert!(!part_path.exists());
     assert!(!destination.exists());
+}
+
+#[tokio::test]
+async fn cancellation_preserves_destination_that_existed_before_download() {
+    let operator = memory_operator();
+    operator
+        .write("replacement.bin", patterned_bytes(4096, 81))
+        .await
+        .expect("remote fixture should upload");
+    let temp = tempfile::tempdir().expect("temp directory should build");
+    let destination = temp.path().join("existing.bin");
+    let original_destination = patterned_bytes(777, 19);
+    tokio::fs::write(&destination, &original_destination)
+        .await
+        .expect("existing destination should write");
+    tokio::fs::write(part_path_for(&destination), patterned_bytes(1024, 81))
+        .await
+        .expect("partial fixture should write");
+    let (control, _, cancelled) = controls();
+    cancelled.store(true, Ordering::Relaxed);
+    let mut observer = RecordingObserver::default();
+
+    download_to_stage(
+        &operator,
+        DownloadEngineRequest {
+            key: "replacement.bin".into(),
+            temp_path: destination.clone(),
+            chunk_size: 1024,
+            expected_etag: None,
+            recorded_bytes_done: 1024,
+        },
+        control,
+        &mut observer,
+    )
+    .await
+    .expect_err("cancelled replacement must fail");
+
+    assert_eq!(
+        tokio::fs::read(destination)
+            .await
+            .expect("pre-existing destination must survive cancellation"),
+        original_destination
+    );
+}
+
+#[tokio::test]
+async fn complete_but_stale_partial_file_is_not_promoted_by_length_alone() {
+    let operator = memory_operator();
+    let remote = patterned_bytes(4096, 33);
+    operator
+        .write("same-size.bin", remote.clone())
+        .await
+        .expect("remote fixture should upload");
+    let temp = tempfile::tempdir().expect("temp directory should build");
+    let destination = temp.path().join("same-size.bin");
+    tokio::fs::write(
+        part_path_for(&destination),
+        patterned_bytes(remote.len(), 99),
+    )
+    .await
+    .expect("stale complete partial should write");
+    let (control, _, _) = controls();
+    let mut observer = RecordingObserver::default();
+
+    download_to_stage(
+        &operator,
+        DownloadEngineRequest {
+            key: "same-size.bin".into(),
+            temp_path: destination.clone(),
+            chunk_size: 1024,
+            expected_etag: None,
+            recorded_bytes_done: remote.len() as u64,
+        },
+        control,
+        &mut observer,
+    )
+    .await
+    .expect("engine should recover without publishing stale bytes");
+
+    let downloaded = tokio::fs::read(destination)
+        .await
+        .expect("destination should exist");
+    assert_eq!(downloaded.len(), remote.len());
+    assert_eq!(Sha256::digest(downloaded), Sha256::digest(remote));
+}
+
+#[tokio::test]
+async fn changed_remote_etag_rejects_resume_before_touching_partial_file() {
+    let storage = memory_operator();
+    let remote = patterned_bytes(4096, 41);
+    storage
+        .write("etag.bin", remote.clone())
+        .await
+        .expect("remote fixture should upload");
+    let operator = report_etag(storage, "etag-new");
+    let temp = tempfile::tempdir().expect("temp directory should build");
+    let destination = temp.path().join("etag.bin");
+    let prefix = remote[..1024].to_vec();
+    tokio::fs::write(part_path_for(&destination), &prefix)
+        .await
+        .expect("partial fixture should write");
+    let (control, _, _) = controls();
+    let mut observer = RecordingObserver::default();
+
+    let error = download_to_stage(
+        &operator,
+        DownloadEngineRequest {
+            key: "etag.bin".into(),
+            temp_path: destination.clone(),
+            chunk_size: 1024,
+            expected_etag: Some("etag-old".into()),
+            recorded_bytes_done: 1024,
+        },
+        control,
+        &mut observer,
+    )
+    .await
+    .expect_err("changed source must reject resume");
+
+    assert!(matches!(error.kind, ErrorKind::SourceChanged));
+    assert!(observer.source_changed);
+    assert_eq!(
+        tokio::fs::read(part_path_for(&destination))
+            .await
+            .expect("source-change detection must not mutate partial bytes"),
+        prefix
+    );
+}
+
+#[tokio::test]
+async fn required_etag_that_backend_omits_fails_closed() {
+    let operator = memory_operator();
+    operator
+        .write("missing-etag.bin", patterned_bytes(1024, 51))
+        .await
+        .expect("remote fixture should upload");
+    let temp = tempfile::tempdir().expect("temp directory should build");
+    let destination = temp.path().join("missing-etag.bin");
+    let (control, _, _) = controls();
+    let mut observer = RecordingObserver::default();
+
+    let error = download_to_stage(
+        &operator,
+        DownloadEngineRequest {
+            key: "missing-etag.bin".into(),
+            temp_path: destination.clone(),
+            chunk_size: 512,
+            expected_etag: Some("required-etag".into()),
+            recorded_bytes_done: 0,
+        },
+        control,
+        &mut observer,
+    )
+    .await
+    .expect_err("an unverifiable source version must not be downloaded");
+
+    assert!(matches!(error.kind, ErrorKind::SourceChanged));
+    assert!(!destination.exists());
+}
+
+#[tokio::test]
+async fn repeated_nonempty_short_reads_still_reconstruct_the_object() {
+    let storage = memory_operator();
+    let original = patterned_bytes(8192 + 37, 61);
+    storage
+        .write("short-reads.bin", original.clone())
+        .await
+        .expect("remote fixture should upload");
+    let operator = limit_read_responses(storage, 317);
+    let temp = tempfile::tempdir().expect("temp directory should build");
+    let destination = temp.path().join("short-reads.bin");
+    let (control, _, _) = controls();
+    let mut observer = RecordingObserver::default();
+
+    download_to_stage(
+        &operator,
+        DownloadEngineRequest {
+            key: "short-reads.bin".into(),
+            temp_path: destination.clone(),
+            chunk_size: 1024,
+            expected_etag: None,
+            recorded_bytes_done: 0,
+        },
+        control,
+        &mut observer,
+    )
+    .await
+    .expect("nonempty short reads should continue until total is reached");
+
+    assert_eq!(
+        tokio::fs::read(destination)
+            .await
+            .expect("destination should exist"),
+        original
+    );
+    assert!(observer.chunks.iter().all(|(_, len, _)| *len <= 317));
 }

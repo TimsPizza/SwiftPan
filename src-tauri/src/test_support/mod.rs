@@ -2,4 +2,4 @@ mod bytes;
 mod storage_faults;
 
 pub(crate) use bytes::patterned_bytes;
-pub(crate) use storage_faults::inject_early_eof;
+pub(crate) use storage_faults::{inject_early_eof, limit_read_responses, report_etag};

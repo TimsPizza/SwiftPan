@@ -12,6 +12,10 @@ use tokio::sync::mpsc;
 
 pub(super) struct StreamUploadRequest {
     pub(super) key: String,
+    // Contract input pinned by red tests; enforcement belongs to the follow-up
+    // behavior fix, not this test-only change.
+    #[allow(dead_code)]
+    pub(super) expected_bytes: u64,
     pub(super) content_type: Option<String>,
     pub(super) content_disposition: Option<String>,
 }
