@@ -320,6 +320,7 @@ export const api = {
     key: string;
     uri: string;
     part_size: number;
+    content_type?: string;
   }) => invokeBridge<string>("android_upload_from_uri", { params }),
 };
 

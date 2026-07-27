@@ -51,6 +51,10 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
               key,
               uri,
               part_size: 8 * 1024 * 1024,
+              content_type:
+                typeof e.mimeType === "string" && e.mimeType.trim().length > 0
+                  ? e.mimeType
+                  : undefined,
             });
             started += 1;
             pendingObjectKeys.add(key);
@@ -104,6 +108,7 @@ export function useMobileFileTransfer(filesOverride?: File[]) {
             key,
             bytes_total: f.size,
             part_size: 8 * 1024 * 1024,
+            content_type: f.type || undefined,
           });
           pendingObjectKeys.add(key);
           setTransfersOpen(true);
