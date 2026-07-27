@@ -4,7 +4,6 @@
 //! lookup. It must not own general object browsing, credentials, transfers,
 //! platform filesystem access, sharing, or usage commands.
 
-use crate::r2_client;
 use crate::sp_backend::SpBackend;
 use crate::types::SpResult;
 use base64::Engine;
@@ -18,15 +17,9 @@ pub async fn generate_thumbnail_and_upload(
     if !crate::settings::get().upload_thumbnail {
         return Ok(None);
     }
-    let jpeg = crate::thumbnail::generate_thumbnail_bytes(&source_path, 128, 16 * 1024).await?;
-    let Some(bytes) = jpeg else {
-        return Ok(None);
-    };
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
-    let thumbnail_key = crate::thumbnail::thumbnail_key_for(&key);
-    r2_client::put_object_bytes(&client, &thumbnail_key, bytes, None, false).await?;
-    Ok(Some(thumbnail_key))
+    let operator = crate::storage::build_operator(&bundle.r2).await?;
+    crate::thumbnail::generate_and_store(&operator, &key, &source_path, 128, 16 * 1024).await
 }
 
 #[tauri::command]
@@ -40,13 +33,13 @@ pub async fn thumbnail_get_cached_data(
         }
     }
 
-    let thumbnail_key = crate::thumbnail::thumbnail_key_for(&object_key);
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
-    let Some(bytes) = r2_client::read_object_bytes_opt(&client, &thumbnail_key).await? else {
+    let operator = crate::storage::build_operator(&bundle.r2).await?;
+    let Some(bytes) = crate::thumbnail::read_stored(&operator, &object_key).await? else {
         let _ = crate::transfer_db::delete_thumbnail_cache(&object_key);
         return Ok(None);
     };
+    let thumbnail_key = crate::thumbnail::thumbnail_key_for(&object_key);
     let data_url = format!(
         "data:image/jpeg;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
