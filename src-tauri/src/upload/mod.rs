@@ -1,6 +1,6 @@
 //! Public facade and application-layer orchestration for uploads.
 //!
-//! This module owns bridge-facing DTOs, task spawning, credential/client
+//! This module owns bridge-facing DTOs, task spawning, credential/operator
 //! coordination, Tauri event emission, and composition of upload adapters. It
 //! must not contain local-file chunk loops, MIME rules, global registry
 //! implementation, stream-channel mechanics, or Android SAF source handling.
@@ -9,7 +9,7 @@ use crate::settings;
 use crate::transfer_db::{TransferLifecycle, TransferPhase, TransferSnapshot};
 use crate::transfer_fsm::TransferStateEvent;
 use crate::types::*;
-use crate::{r2_client, sp_backend::SpBackend};
+use crate::{sp_backend::SpBackend, storage};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
@@ -266,35 +266,24 @@ async fn complete_file_upload(
     app: &tauri::AppHandle,
     id: &str,
     params: &NewUploadParams,
-    client: &r2_client::R2Client,
+    operator: &opendal::Operator,
     should_upload_thumbnail: bool,
 ) -> SpResult<()> {
     if should_upload_thumbnail {
-        let thumbnail_client = client.clone();
+        let thumbnail_operator = operator.clone();
         let source_path = params.source_path.clone();
         let object_key = params.key.clone();
-        let thumbnail_key = crate::thumbnail::thumbnail_key_for(&params.key);
         tokio::spawn(async move {
-            match crate::thumbnail::generate_thumbnail_bytes(&source_path, 128, 16 * 1024).await {
-                Ok(Some(bytes)) => {
-                    if let Err(error) = r2_client::put_object_bytes(
-                        &thumbnail_client,
-                        &thumbnail_key,
-                        bytes,
-                        None,
-                        false,
-                    )
-                    .await
-                    {
-                        crate::logger::warn(
-                            "upload",
-                            &format!(
-                                "thumbnail upload failed for {object_key}: {}",
-                                error.message
-                            ),
-                        );
-                    }
-                }
+            match crate::thumbnail::generate_and_store(
+                &thumbnail_operator,
+                &object_key,
+                &source_path,
+                128,
+                16 * 1024,
+            )
+            .await
+            {
+                Ok(Some(_)) => {}
                 Ok(None) => crate::logger::info(
                     "upload",
                     &format!("thumbnail skipped for {object_key}; unsupported file type"),
@@ -350,13 +339,13 @@ pub async fn start_upload(app: tauri::AppHandle, params: NewUploadParams) -> SpR
             let should_upload_thumbnail = settings::get().upload_thumbnail;
             start_event(&task_app, &task_id)?;
             let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-            let client = r2_client::build_client(&bundle.r2).await?;
+            let operator = storage::build_operator(&bundle.r2).await?;
             let mut observer = RuntimeUploadObserver {
                 app: &task_app,
                 transfer_id: &task_id,
             };
             upload_file(
-                &client.op,
+                &operator,
                 UploadEngineRequest {
                     key: params.key.clone(),
                     source_path: PathBuf::from(&params.source_path),
@@ -372,7 +361,7 @@ pub async fn start_upload(app: tauri::AppHandle, params: NewUploadParams) -> SpR
                 &task_app,
                 &task_id,
                 &params,
-                &client,
+                &operator,
                 should_upload_thumbnail,
             )
             .await
@@ -415,13 +404,13 @@ pub async fn start_upload_stream(
                 );
             }
             let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-            let client = r2_client::build_client(&bundle.r2).await?;
+            let operator = storage::build_operator(&bundle.r2).await?;
             let mut observer = RuntimeUploadObserver {
                 app: &task_app,
                 transfer_id: &task_id,
             };
             upload_stream(
-                &client.op,
+                &operator,
                 StreamUploadRequest {
                     key: params.key,
                     content_type: params.content_type,

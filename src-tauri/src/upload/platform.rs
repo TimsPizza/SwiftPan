@@ -73,8 +73,8 @@ pub(super) async fn start_upload_android_uri(
             );
 
             let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-            let client = r2_client::build_client(&bundle.r2).await?;
-            let mut writer = open_upload_writer(&client.op, &key, content_type.as_deref(), None)
+            let operator = crate::storage::build_operator(&bundle.r2).await?;
+            let mut writer = open_upload_writer(&operator, &key, content_type.as_deref(), None)
                 .await
                 .map_err(|error| SpError {
                     kind: ErrorKind::RetryableNet,
@@ -168,7 +168,7 @@ pub(super) async fn start_upload_android_uri(
 
             if cancelled.load(Ordering::Relaxed) {
                 let _ = writer.close().await;
-                let _ = client.op.delete(&key).await;
+                let _ = operator.delete(&key).await;
                 transition_upload(&task_id, TransferStateEvent::CancelConfirm)?;
                 emit_upload(
                     &task_app,
@@ -192,7 +192,7 @@ pub(super) async fn start_upload_android_uri(
             })?;
 
             if should_upload_thumbnail {
-                upload_android_thumbnail(&task_app, &task_id, &key, &uri, &client).await?;
+                upload_android_thumbnail(&task_app, &task_id, &key, &uri, &operator).await?;
             }
             transition_upload(&task_id, TransferStateEvent::Complete)?;
             emit_upload(
@@ -215,11 +215,10 @@ async fn upload_android_thumbnail(
     transfer_id: &str,
     key: &str,
     uri: &str,
-    client: &crate::r2_client::R2Client,
+    operator: &opendal::Operator,
 ) -> SpResult<()> {
     let temp_path = android_thumbnail_temp_path(transfer_id, key)?;
     let temp = temp_path.to_string_lossy().to_string();
-    let thumbnail_key = crate::thumbnail::thumbnail_key_for(key);
     let copy_result = crate::bridge::android_fs_copy(
         app.clone(),
         crate::bridge::AndroidFsCopyParams {
@@ -234,21 +233,8 @@ async fn upload_android_thumbnail(
     .await;
     match copy_result {
         Ok(()) => {
-            match crate::thumbnail::generate_thumbnail_bytes(&temp, 128, 16 * 1024).await {
-                Ok(Some(bytes)) => {
-                    if let Err(error) =
-                        r2_client::put_object_bytes(client, &thumbnail_key, bytes, None, false)
-                            .await
-                    {
-                        crate::logger::warn(
-                            "upload",
-                            &format!(
-                                "android thumbnail upload failed for {key}: {}",
-                                error.message
-                            ),
-                        );
-                    }
-                }
+            match crate::thumbnail::generate_and_store(operator, key, &temp, 128, 16 * 1024).await {
+                Ok(Some(_)) => {}
                 Ok(None) => crate::logger::info(
                     "upload",
                     &format!("android thumbnail skipped for {key}; unsupported file type"),
