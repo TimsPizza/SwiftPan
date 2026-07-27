@@ -131,7 +131,7 @@ pub async fn backend_set_credentials(bundle: CredentialBundle) -> SpResult<()> {
         ),
     }
     if result.is_ok() {
-        crate::r2_client::invalidate_cached_client().await;
+        crate::storage::invalidate_cached_operator().await;
     }
     result
 }
@@ -148,7 +148,7 @@ pub async fn backend_patch_credentials(patch: crate::sp_backend::R2ConfigPatch) 
         ),
     }
     if result.is_ok() {
-        crate::r2_client::invalidate_cached_client().await;
+        crate::storage::invalidate_cached_operator().await;
     }
     result
 }
