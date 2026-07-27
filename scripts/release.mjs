@@ -372,27 +372,30 @@ if (!dryRun) {
 }
 
 if (dispatch) {
-  // Optionally dispatch the workflow manually (requires GitHub CLI)
-  const hasGh =
-    !!spawnSync("bash", ["-lc", "command -v gh >/dev/null 2>&1"]).status ===
-    false;
-  // The above check isn't reliable with spawnSync + inherit. Try a direct attempt.
-  const ok = tryExec("gh", ["--version"]);
-  if (!ok) {
-    log("gh CLI not found or not authenticated; skipping workflow dispatch.");
+  if (dryRun) {
+    log(`[dry-run] Would dispatch target '${target}'.`);
+  } else if (!noPush) {
+    log(
+      `Skipping duplicate manual dispatch: pushing ${tag} already triggers the full release workflow.`,
+    );
   } else {
-    log("Dispatching GitHub Actions workflow: Build Desktop + Android");
-    const dispatchArgs = [
-      "workflow",
-      "run",
-      "Build Desktop + Android",
-      "-f",
-      `publish_release=true`,
-      "-f",
-      `target=${target}`,
-    ];
-    log(`gh ${dispatchArgs.join(" ")}`);
-    tryExec("gh", dispatchArgs);
+    // A no-push dispatch builds the selected target from the remote default
+    // branch. Local commits and tags are not visible to GitHub until pushed.
+    const ok = tryExec("gh", ["--version"]);
+    if (!ok) {
+      log("gh CLI not found or not authenticated; skipping workflow dispatch.");
+    } else {
+      log("Dispatching GitHub Actions workflow: Build Desktop + Android");
+      const dispatchArgs = [
+        "workflow",
+        "run",
+        "Build Desktop + Android",
+        "-f",
+        `target=${target}`,
+      ];
+      log(`gh ${dispatchArgs.join(" ")}`);
+      tryExec("gh", dispatchArgs);
+    }
   }
 }
 

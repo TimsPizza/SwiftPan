@@ -1,7 +1,7 @@
 name: Build Desktop + Android
 
 permissions:
-  contents: write
+  contents: read
 
 on:
   push:
@@ -9,14 +9,8 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      publish_release:
-        description: "Create/Update GitHub Release with built artifacts"
-        required: false
-        default: "false"
-        type: choice
-        options: ["false", "true"]
       target:
-        description: "Build target set (workflow_dispatch only)"
+        description: "Build target set without publishing a GitHub Release"
         required: false
         default: android
         type: choice
@@ -29,10 +23,18 @@ env:
   CARGO_TARGET_CACHE_BUSTER: 1
 
 jobs:
+  quality:
+    name: Quality gate
+    uses: ./.github/workflows/ci.yml
+
   build-desktop-ubuntu:
     name: Desktop (Ubuntu)
+    needs: quality
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      inputs.target == 'all' ||
+      inputs.target == 'ubuntu'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,8 +118,12 @@ jobs:
 
   build-desktop-macos-arm:
     name: Desktop (macOS arm)
+    needs: quality
     runs-on: macos-14
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      inputs.target == 'all' ||
+      inputs.target == 'macos-arm'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -174,8 +180,12 @@ jobs:
 
   build-desktop-windows:
     name: Desktop (Windows)
+    needs: quality
     runs-on: windows-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      inputs.target == 'all' ||
+      inputs.target == 'windows'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -233,8 +243,12 @@ jobs:
 
   build-android:
     name: Android (Ubuntu)
+    needs: quality
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      inputs.target == 'all' ||
+      inputs.target == 'android'
     environment: ANDROID_KEYSTORE_B64
     steps:
       - name: Checkout
@@ -343,12 +357,18 @@ jobs:
             } > src-tauri/gen/android/keystore.properties
             chmod 600 src-tauri/gen/android/swiftpan-release.jks
             echo "Keystore prepared." >&2
+          elif [ "$REQUIRE_SIGNING" = "true" ]; then
+            echo "Refusing to publish unsigned Android artifacts." >&2
+            echo "Configure ANDROID_KEYSTORE_B64 and ANDROID_KEYSTORE_PASSWORD." >&2
+            exit 1
           else
-            echo "Android release signing secrets absent; will build unsigned release." >&2
+            echo "Signing secrets absent; manual build will be unsigned." >&2
           fi
         env:
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build Android (APK and AAB)
         env:
@@ -386,9 +406,17 @@ jobs:
         build-desktop-ubuntu,
         build-desktop-macos-arm,
         build-desktop-windows,
-      ]
+    ]
     runs-on: ubuntu-latest
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      contents: write
+    if: >-
+      !cancelled() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.build-android.result == 'success' &&
+      needs.build-desktop-ubuntu.result == 'success' &&
+      needs.build-desktop-macos-arm.result == 'success' &&
+      needs.build-desktop-windows.result == 'success'
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
