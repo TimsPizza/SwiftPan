@@ -181,11 +181,17 @@ pub(crate) async fn download_to_stage(
                     context: None,
                     at: now_ms(),
                 })?;
+            file.flush().await.map_err(|error| SpError {
+                kind: ErrorKind::RetryableNet,
+                message: format!("flush staged download: {error}"),
+                retry_after_ms: Some(300),
+                context: None,
+                at: now_ms(),
+            })?;
             offset = offset.saturating_add(chunk_bytes.len() as u64);
             observer.chunk_done(range_start, chunk_bytes.len() as u64, offset)?;
         }
 
-        file.flush().await.ok();
         if control.cancelled.load(Ordering::Relaxed) {
             return cancel_download(&part_path, observer).await;
         }
