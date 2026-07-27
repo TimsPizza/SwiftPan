@@ -9,7 +9,7 @@ use crate::transfer_db::{self, TransferKind, TransferLifecycle, TransferPhase, T
 use crate::transfer_fsm::TransferStateEvent;
 use crate::types::*;
 use crate::usage::UsageSync;
-use crate::{r2_client, sp_backend::SpBackend};
+use crate::{sp_backend::SpBackend, storage};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -361,10 +361,10 @@ async fn run_download(app: &tauri::AppHandle, id: &str, recovered: bool) -> SpRe
     emit_download(app, &start_event);
 
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
+    let operator = storage::build_operator(&bundle.r2).await?;
     let mut observer = RuntimeDownloadObserver { app, id };
     let output = download_to_stage(
-        &client.op,
+        &operator,
         DownloadEngineRequest {
             key,
             temp_path: temp_path.clone(),
