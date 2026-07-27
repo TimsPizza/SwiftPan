@@ -1,21 +1,34 @@
-use crate::bridge::AndroidFsCopyParams;
+//! Public facade and application-layer orchestration for downloads.
+//!
+//! This module owns the API called by the Tauri bridge, task spawning, event
+//! emission, and coordination between the engine, runtime, and platform
+//! adapters. It must not contain range I/O, target-path rules, or persistence
+//! implementation details; those belong to the dedicated child modules.
+
 use crate::transfer_db::{self, TransferKind, TransferLifecycle, TransferPhase, TransferSnapshot};
-use crate::transfer_fsm::{apply_transfer_event, TransferState, TransferStateEvent};
+use crate::transfer_fsm::TransferStateEvent;
 use crate::types::*;
 use crate::usage::UsageSync;
 use crate::{r2_client, sp_backend::SpBackend};
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 use tauri::Emitter;
-#[cfg(target_os = "android")]
-use tauri_plugin_android_fs::{AndroidFsExt as _, FileUri, PersistableAccessMode};
-use tokio::io::AsyncWriteExt;
+
+mod engine;
+mod platform;
+mod policy;
+mod runtime;
+mod target;
+
+use engine::*;
+use platform::*;
+use policy::*;
+use runtime::*;
+use target::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewDownloadParams {
@@ -82,216 +95,12 @@ pub enum DownloadEvent {
     },
 }
 
-#[derive(Debug, Clone)]
-enum DownloadTarget {
-    FileSystem {
-        dest: PathBuf,
-    },
-    AndroidTree {
-        tree_uri: String,
-        relative_path: String,
-        mime: Option<String>,
-    },
-}
-
-impl DownloadTarget {
-    fn from_params(params: &NewDownloadParams) -> SpResult<Self> {
-        match (
-            params.dest_path.as_deref(),
-            params.android_tree_uri.as_deref(),
-            params.android_relative_path.as_deref(),
-        ) {
-            (Some(dest), None, None) => Ok(Self::FileSystem {
-                dest: normalize_dest_path(dest)?,
-            }),
-            (None, Some(tree_uri), Some(relative_path)) => {
-                if relative_path.trim().is_empty() {
-                    return Err(err_invalid("android_relative_path required"));
-                }
-                Ok(Self::AndroidTree {
-                    tree_uri: tree_uri.to_string(),
-                    relative_path: relative_path.to_string(),
-                    mime: params.mime.clone(),
-                })
-            }
-            _ => Err(err_invalid(
-                "download target must be either dest_path or android target",
-            )),
-        }
-    }
-
-    fn from_snapshot(snapshot: &TransferSnapshot) -> SpResult<Self> {
-        match snapshot.kind {
-            TransferKind::Download => {}
-            _ => return Err(err_invalid("snapshot kind mismatch")),
-        }
-        if let Some(dest_path) = snapshot.dest_path.as_deref() {
-            return Ok(Self::FileSystem {
-                dest: normalize_dest_path(dest_path)?,
-            });
-        }
-        match (
-            snapshot.android_tree_uri.as_deref(),
-            snapshot.android_relative_path.as_deref(),
-        ) {
-            (Some(tree_uri), Some(relative_path)) => Ok(Self::AndroidTree {
-                tree_uri: tree_uri.to_string(),
-                relative_path: relative_path.to_string(),
-                mime: None,
-            }),
-            _ => Err(err_invalid("snapshot missing download target")),
-        }
-    }
-
-    fn temp_path_for(&self, transfer_id: &str, key: &str) -> SpResult<PathBuf> {
-        match self {
-            Self::FileSystem { dest } => Ok(dest.clone()),
-            Self::AndroidTree { relative_path, .. } => {
-                let mut dir = download_stage_dir()?;
-                let fallback_name = sanitize_filename(key);
-                let basename = Path::new(relative_path)
-                    .file_name()
-                    .and_then(|v| v.to_str())
-                    .filter(|v| !v.trim().is_empty())
-                    .unwrap_or(fallback_name.as_str())
-                    .to_string();
-                dir.push(transfer_id);
-                std::fs::create_dir_all(&dir).map_err(|e| SpError {
-                    kind: ErrorKind::NotRetriable,
-                    message: format!("create download stage dir: {e}"),
-                    retry_after_ms: None,
-                    context: None,
-                    at: now_ms(),
-                })?;
-                dir.push(basename);
-                Ok(dir)
-            }
-        }
-    }
-
-    fn snapshot_fields(&self) -> (Option<String>, Option<String>, Option<String>) {
-        match self {
-            Self::FileSystem { dest } => (Some(dest.to_string_lossy().to_string()), None, None),
-            Self::AndroidTree {
-                tree_uri,
-                relative_path,
-                ..
-            } => (None, Some(tree_uri.clone()), Some(relative_path.clone())),
-        }
-    }
-}
-
-struct Transfer {
-    key: String,
-    target: DownloadTarget,
-    temp_path: PathBuf,
-    chunk: u64,
-    expected_etag: Option<String>,
-    observed_etag: Option<String>,
-    bytes_total: Option<u64>,
-    bytes_done: u64,
-    last_error: Option<SpError>,
-    paused: Arc<AtomicBool>,
-    cancelled: Arc<AtomicBool>,
-    worker_active: bool,
-    lifecycle_state: TransferLifecycle,
-    phase: Option<TransferPhase>,
-    created_at_ms: i64,
-    updated_at_ms: i64,
-}
-
-static DL: Lazy<Mutex<HashMap<String, Transfer>>> = Lazy::new(|| Mutex::new(HashMap::new()));
-
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
 fn emit_download(app: &tauri::AppHandle, ev: &DownloadEvent) {
     let _ = app.emit("sp://download_event", ev);
-}
-
-fn normalize_dest_path(raw: &str) -> SpResult<PathBuf> {
-    let s = raw.trim();
-    let s = if let Some(rest) = s.strip_prefix("file://") {
-        rest
-    } else {
-        s
-    };
-    if s.contains("://") {
-        return Err(SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "unsupported URI for download destination".into(),
-            retry_after_ms: None,
-            context: None,
-            at: now_ms(),
-        });
-    }
-    Ok(PathBuf::from(s))
-}
-
-fn sanitize_filename(input: &str) -> String {
-    let cleaned: String = input
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => c,
-        })
-        .collect();
-    let trimmed = cleaned.trim_matches('.');
-    if trimmed.is_empty() {
-        "download.bin".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn download_stage_dir() -> SpResult<PathBuf> {
-    let mut p = crate::sp_backend::vault_dir()?;
-    p.push("downloads");
-    p.push("staging");
-    std::fs::create_dir_all(&p).map_err(|e| SpError {
-        kind: ErrorKind::NotRetriable,
-        message: format!("create download stage dir: {e}"),
-        retry_after_ms: None,
-        context: None,
-        at: now_ms(),
-    })?;
-    Ok(p)
-}
-
-fn part_path_for(temp_path: &Path) -> PathBuf {
-    let mut part_name = temp_path.as_os_str().to_os_string();
-    part_name.push(".part");
-    PathBuf::from(part_name)
-}
-
-fn last_fail_reason_for(
-    lifecycle_state: TransferLifecycle,
-    last_error: Option<&SpError>,
-) -> Option<ErrorKind> {
-    if !matches!(lifecycle_state, TransferLifecycle::Failed) {
-        return None;
-    }
-    last_error.map(|error| error.kind.clone())
-}
-
-fn should_keep_failed_artifacts(reason: Option<&ErrorKind>) -> bool {
-    matches!(reason, Some(ErrorKind::RetryableNet))
-}
-
-fn lifecycle_after_restart(lifecycle: &TransferLifecycle) -> TransferLifecycle {
-    match lifecycle {
-        TransferLifecycle::Queued | TransferLifecycle::Running => TransferLifecycle::Paused,
-        TransferLifecycle::Cancelling => TransferLifecycle::Cancelled,
-        other => other.clone(),
-    }
-}
-
-fn next_download_range(offset: u64, total: u64, chunk_size: u64) -> Option<std::ops::Range<u64>> {
-    if offset >= total || chunk_size == 0 {
-        return None;
-    }
-    Some(offset..offset.saturating_add(chunk_size).min(total))
 }
 
 async fn cleanup_download_artifacts(temp_path: &Path) {
@@ -302,191 +111,6 @@ async fn cleanup_download_artifacts(temp_path: &Path) {
 fn cleanup_download_artifacts_sync(temp_path: &Path) {
     let _ = std::fs::remove_file(part_path_for(temp_path));
     let _ = std::fs::remove_file(temp_path);
-}
-
-fn snapshot_from_transfer(id: &str, transfer: &Transfer) -> TransferSnapshot {
-    let (dest_path, android_tree_uri, android_relative_path) = transfer.target.snapshot_fields();
-    TransferSnapshot {
-        transfer_id: id.to_string(),
-        kind: TransferKind::Download,
-        key: transfer.key.clone(),
-        lifecycle_state: transfer.lifecycle_state.clone(),
-        phase: transfer.phase.clone(),
-        bytes_total: transfer.bytes_total,
-        bytes_done: transfer.bytes_done,
-        rate_bps: 0,
-        last_error: transfer.last_error.clone(),
-        last_fail_reason: last_fail_reason_for(
-            transfer.lifecycle_state.clone(),
-            transfer.last_error.as_ref(),
-        ),
-        dest_path,
-        android_tree_uri,
-        android_relative_path,
-        temp_path: Some(transfer.temp_path.to_string_lossy().to_string()),
-        expected_etag: transfer.expected_etag.clone(),
-        observed_etag: transfer.observed_etag.clone(),
-        created_at_ms: transfer.created_at_ms,
-        updated_at_ms: transfer.updated_at_ms,
-    }
-}
-
-fn state_from_transfer(transfer: &Transfer) -> TransferState {
-    TransferState {
-        lifecycle: transfer.lifecycle_state.clone(),
-        phase: transfer.phase,
-    }
-}
-
-fn persist_transfer(id: &str) -> SpResult<()> {
-    let snapshot = {
-        let g = DL.lock().map_err(|_| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "download state lock poisoned".into(),
-            retry_after_ms: None,
-            context: None,
-            at: now_ms(),
-        })?;
-        let transfer = g.get(id).ok_or_else(|| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "download not found".into(),
-            retry_after_ms: None,
-            context: None,
-            at: now_ms(),
-        })?;
-        snapshot_from_transfer(id, transfer)
-    };
-    transfer_db::upsert_snapshot(&snapshot)
-}
-
-fn mutate_transfer<F>(id: &str, f: F) -> SpResult<()>
-where
-    F: FnOnce(&mut Transfer),
-{
-    {
-        let mut g = DL.lock().map_err(|_| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "download state lock poisoned".into(),
-            retry_after_ms: None,
-            context: None,
-            at: now_ms(),
-        })?;
-        let transfer = g.get_mut(id).ok_or_else(|| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "download not found".into(),
-            retry_after_ms: None,
-            context: None,
-            at: now_ms(),
-        })?;
-        f(transfer);
-        transfer.updated_at_ms = now_ms();
-    }
-    persist_transfer(id)
-}
-
-fn transition_transfer(id: &str, event: TransferStateEvent) -> SpResult<TransferState> {
-    let next_state = {
-        let mut g = DL.lock().map_err(|_| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "download state lock poisoned".into(),
-            retry_after_ms: None,
-            context: None,
-            at: now_ms(),
-        })?;
-        let transfer = g.get_mut(id).ok_or_else(|| SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "download not found".into(),
-            retry_after_ms: None,
-            context: None,
-            at: now_ms(),
-        })?;
-        let next = apply_transfer_event(
-            TransferKind::Download,
-            &state_from_transfer(transfer),
-            event,
-        )?;
-        transfer.lifecycle_state = next.lifecycle.clone();
-        transfer.phase = next.phase;
-        transfer.updated_at_ms = now_ms();
-        next
-    };
-    persist_transfer(id)?;
-    Ok(next_state)
-}
-
-fn load_runtime_fields(
-    id: &str,
-) -> SpResult<(
-    String,
-    DownloadTarget,
-    PathBuf,
-    u64,
-    Option<String>,
-    u64,
-    Arc<AtomicBool>,
-    Arc<AtomicBool>,
-)> {
-    let g = DL.lock().map_err(|_| SpError {
-        kind: ErrorKind::NotRetriable,
-        message: "download state lock poisoned".into(),
-        retry_after_ms: None,
-        context: None,
-        at: now_ms(),
-    })?;
-    let transfer = g.get(id).ok_or_else(|| SpError {
-        kind: ErrorKind::NotRetriable,
-        message: "download not found".into(),
-        retry_after_ms: None,
-        context: None,
-        at: now_ms(),
-    })?;
-    Ok((
-        transfer.key.clone(),
-        transfer.target.clone(),
-        transfer.temp_path.clone(),
-        transfer.chunk,
-        transfer.expected_etag.clone(),
-        transfer.bytes_done,
-        transfer.paused.clone(),
-        transfer.cancelled.clone(),
-    ))
-}
-
-fn ensure_resume_target_access(_app: &tauri::AppHandle, _target: &DownloadTarget) -> SpResult<()> {
-    #[cfg(target_os = "android")]
-    {
-        if let DownloadTarget::AndroidTree { tree_uri, .. } = _target {
-            let api = _app.android_fs();
-            let uri = FileUri::from_str(tree_uri).map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("tree uri parse: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: now_ms(),
-            })?;
-            let has_permission = api
-                .check_persisted_uri_permission(&uri, PersistableAccessMode::ReadAndWrite)
-                .map_err(|e| SpError {
-                    kind: ErrorKind::NotRetriable,
-                    message: format!("check persisted SAF permission: {e}"),
-                    retry_after_ms: None,
-                    context: None,
-                    at: now_ms(),
-                })?;
-            if !has_permission {
-                return Err(SpError {
-                    kind: ErrorKind::NotRetriable,
-                    message: "android download directory permission lost; choose directory again"
-                        .into(),
-                    retry_after_ms: None,
-                    context: None,
-                    at: now_ms(),
-                });
-            }
-        }
-    }
-    #[allow(unreachable_code)]
-    Ok(())
 }
 
 fn download_status_from_snapshot(snapshot: TransferSnapshot) -> DownloadStatus {
@@ -730,205 +354,25 @@ async fn run_download(app: &tauri::AppHandle, id: &str, recovered: bool) -> SpRe
 
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
     let client = r2_client::build_client(&bundle.r2).await?;
-
-    let head = client.op.stat(&key).await.map_err(|e| SpError {
-        kind: ErrorKind::RetryableNet,
-        message: format!("Stat: {e}"),
-        retry_after_ms: Some(500),
-        context: None,
-        at: now_ms(),
-    })?;
-    let mut b = std::collections::HashMap::new();
-    b.insert("HeadObject".into(), 1u64);
-    let _ = UsageSync::record_local_delta(UsageDelta {
-        class_a: Default::default(),
-        class_b: b,
-        ingress_bytes: 0,
-        egress_bytes: 0,
-        added_storage_bytes: 0,
-        deleted_storage_bytes: 0,
-    });
-
-    let total = head.content_length();
-    let etag = head.etag().map(|s| s.to_string());
-    mutate_transfer(id, |t| {
-        t.bytes_total = Some(total);
-        t.observed_etag = etag.clone();
-        if total > 0 && t.bytes_done > total {
-            t.bytes_done = 0;
-        }
-    })?;
-
-    if let (Some(exp), Some(obs)) = (expected_etag.as_ref(), etag.as_ref()) {
-        if exp != obs {
-            emit_download(
-                app,
-                &DownloadEvent::SourceChanged {
-                    transfer_id: id.to_string(),
-                },
-            );
-            return Err(SpError {
-                kind: ErrorKind::SourceChanged,
-                message: "ETag mismatch".into(),
-                retry_after_ms: None,
-                context: None,
-                at: now_ms(),
-            });
-        }
-    }
-
-    if let Some(parent) = temp_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("create parent dir: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: now_ms(),
-            })?;
-    }
-
-    let part_path = part_path_for(&temp_path);
-    let finished_local = match tokio::fs::metadata(&temp_path).await {
-        Ok(meta) => meta.len() == total && bytes_done == total && total > 0,
-        Err(_) => false,
-    };
-
-    if !finished_local {
-        let mut offset = match tokio::fs::metadata(&part_path).await {
-            Ok(meta) => meta.len(),
-            Err(_) => 0,
-        };
-        if offset > total {
-            let _ = tokio::fs::remove_file(&part_path).await;
-            offset = 0;
-        }
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&part_path)
-            .await
-            .map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("open temp: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: now_ms(),
-            })?;
-
-        transition_transfer(
-            id,
-            TransferStateEvent::Run(TransferPhase::DownloadingRemote),
-        )?;
-        mutate_transfer(id, |t| {
-            t.bytes_done = offset;
-        })?;
-
-        let mut was_paused = false;
-        while offset < total {
-            if cancelled.load(Ordering::Relaxed) {
-                return cancel_download(app, id, &part_path, &temp_path).await;
-            }
-            while paused.load(Ordering::Relaxed) {
-                if !was_paused {
-                    transition_transfer(id, TransferStateEvent::Pause)?;
-                    emit_download(
-                        app,
-                        &DownloadEvent::Paused {
-                            transfer_id: id.to_string(),
-                        },
-                    );
-                    was_paused = true;
-                }
-                if cancelled.load(Ordering::Relaxed) {
-                    return cancel_download(app, id, &part_path, &temp_path).await;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-            if was_paused {
-                transition_transfer(
-                    id,
-                    TransferStateEvent::Run(TransferPhase::DownloadingRemote),
-                )?;
-                emit_download(
-                    app,
-                    &DownloadEvent::Resumed {
-                        transfer_id: id.to_string(),
-                    },
-                );
-                was_paused = false;
-            }
-
-            let range = next_download_range(offset, total, chunk)
-                .ok_or_else(|| err_invalid("invalid download range"))?;
-            let range_start = range.start;
-            let data = client
-                .op
-                .read_with(&key)
-                .range(range)
-                .await
-                .map_err(|e| SpError {
-                    kind: ErrorKind::RetryableNet,
-                    message: format!("GetObject range: {e}"),
-                    retry_after_ms: Some(500),
-                    context: None,
-                    at: now_ms(),
-                })?;
-            if data.is_empty() {
-                break;
-            }
-            let chunk_bytes: bytes::Bytes = data.to_bytes();
-            file.write_all(&chunk_bytes).await.map_err(|e| SpError {
-                kind: ErrorKind::RetryableNet,
-                message: format!("write: {e}"),
-                retry_after_ms: Some(300),
-                context: None,
-                at: now_ms(),
-            })?;
-            let mut b = std::collections::HashMap::new();
-            b.insert("GetObject".into(), 1u64);
-            let _ = UsageSync::record_local_delta(UsageDelta {
-                class_a: Default::default(),
-                class_b: b,
-                ingress_bytes: 0,
-                egress_bytes: chunk_bytes.len() as u64,
-                added_storage_bytes: 0,
-                deleted_storage_bytes: 0,
-            });
-            offset = offset.saturating_add(chunk_bytes.len() as u64);
-            mutate_transfer(id, |t| {
-                t.bytes_done = offset;
-            })?;
-            emit_download(
-                app,
-                &DownloadEvent::ChunkDone {
-                    transfer_id: id.to_string(),
-                    range_start,
-                    len: chunk_bytes.len() as u64,
-                },
-            );
-        }
-
-        file.flush().await.ok();
-        if cancelled.load(Ordering::Relaxed) {
-            return cancel_download(app, id, &part_path, &temp_path).await;
-        }
-        tokio::fs::rename(&part_path, &temp_path)
-            .await
-            .map_err(|e| SpError {
-                kind: ErrorKind::NotRetriable,
-                message: format!("rename: {e}"),
-                retry_after_ms: None,
-                context: None,
-                at: now_ms(),
-            })?;
-    }
+    let mut observer = RuntimeDownloadObserver { app, id };
+    let output = download_to_stage(
+        &client.op,
+        DownloadEngineRequest {
+            key,
+            temp_path: temp_path.clone(),
+            chunk_size: chunk,
+            expected_etag,
+            recorded_bytes_done: bytes_done,
+        },
+        DownloadControl { paused, cancelled },
+        &mut observer,
+    )
+    .await?;
 
     materialize_target(app, id, &target, &temp_path).await?;
     transition_transfer(id, TransferStateEvent::Complete)?;
     mutate_transfer(id, |t| {
-        t.bytes_done = total;
+        t.bytes_done = output.total;
     })?;
     emit_download(
         app,
@@ -939,79 +383,114 @@ async fn run_download(app: &tauri::AppHandle, id: &str, recovered: bool) -> SpRe
     Ok(())
 }
 
-async fn cancel_download(
-    app: &tauri::AppHandle,
-    id: &str,
-    part_path: &Path,
-    temp_path: &Path,
-) -> SpResult<()> {
-    let _ = tokio::fs::remove_file(part_path).await;
-    let _ = tokio::fs::remove_file(temp_path).await;
-    let _ = transition_transfer(id, TransferStateEvent::CancelConfirm);
-    mutate_transfer(id, |t| {
-        t.last_error = Some(SpError {
-            kind: ErrorKind::Cancelled,
-            message: "cancelled".into(),
-            retry_after_ms: None,
-            context: None,
-            at: now_ms(),
-        });
-    })?;
-    emit_download(
-        app,
-        &DownloadEvent::Cancelled {
-            transfer_id: id.to_string(),
-        },
-    );
-    Err(SpError {
-        kind: ErrorKind::Cancelled,
-        message: "cancelled".into(),
-        retry_after_ms: None,
-        context: None,
-        at: now_ms(),
-    })
+struct RuntimeDownloadObserver<'a> {
+    app: &'a tauri::AppHandle,
+    id: &'a str,
 }
 
-async fn materialize_target(
-    app: &tauri::AppHandle,
-    id: &str,
-    target: &DownloadTarget,
-    temp_path: &Path,
-) -> SpResult<()> {
-    match target {
-        DownloadTarget::FileSystem { .. } => {
-            transition_transfer(
-                id,
-                TransferStateEvent::Run(TransferPhase::MaterializingTarget),
-            )?;
-            transition_transfer(id, TransferStateEvent::Run(TransferPhase::CleaningUp))?;
-            Ok(())
-        }
-        DownloadTarget::AndroidTree {
-            tree_uri,
-            relative_path,
-            mime,
-        } => {
-            transition_transfer(
-                id,
-                TransferStateEvent::Run(TransferPhase::MaterializingTarget),
-            )?;
-            crate::bridge::android_fs_copy(
-                app.clone(),
-                AndroidFsCopyParams {
-                    direction: "sandbox_to_tree".into(),
-                    local_path: temp_path.to_string_lossy().to_string(),
-                    tree_uri: Some(tree_uri.clone()),
-                    relative_path: Some(relative_path.clone()),
-                    mime: mime.clone(),
-                    uri: None,
-                },
-            )
-            .await?;
-            transition_transfer(id, TransferStateEvent::Run(TransferPhase::CleaningUp))?;
-            let _ = tokio::fs::remove_file(temp_path).await;
-            Ok(())
-        }
+impl DownloadEngineObserver for RuntimeDownloadObserver<'_> {
+    fn remote_metadata(&mut self, total: u64, observed_etag: Option<&str>) -> SpResult<()> {
+        let mut class_b = std::collections::HashMap::new();
+        class_b.insert("HeadObject".into(), 1u64);
+        let _ = UsageSync::record_local_delta(UsageDelta {
+            class_a: Default::default(),
+            class_b,
+            ingress_bytes: 0,
+            egress_bytes: 0,
+            added_storage_bytes: 0,
+            deleted_storage_bytes: 0,
+        });
+        mutate_transfer(self.id, |transfer| {
+            transfer.bytes_total = Some(total);
+            transfer.observed_etag = observed_etag.map(str::to_string);
+            if total > 0 && transfer.bytes_done > total {
+                transfer.bytes_done = 0;
+            }
+        })
+    }
+
+    fn source_changed(&mut self) -> SpResult<()> {
+        emit_download(
+            self.app,
+            &DownloadEvent::SourceChanged {
+                transfer_id: self.id.to_string(),
+            },
+        );
+        Ok(())
+    }
+
+    fn download_started(&mut self, offset: u64) -> SpResult<()> {
+        transition_transfer(
+            self.id,
+            TransferStateEvent::Run(TransferPhase::DownloadingRemote),
+        )?;
+        mutate_transfer(self.id, |transfer| {
+            transfer.bytes_done = offset;
+        })
+    }
+
+    fn paused(&mut self) -> SpResult<()> {
+        transition_transfer(self.id, TransferStateEvent::Pause)?;
+        emit_download(
+            self.app,
+            &DownloadEvent::Paused {
+                transfer_id: self.id.to_string(),
+            },
+        );
+        Ok(())
+    }
+
+    fn resumed(&mut self) -> SpResult<()> {
+        transition_transfer(
+            self.id,
+            TransferStateEvent::Run(TransferPhase::DownloadingRemote),
+        )?;
+        emit_download(
+            self.app,
+            &DownloadEvent::Resumed {
+                transfer_id: self.id.to_string(),
+            },
+        );
+        Ok(())
+    }
+
+    fn chunk_done(&mut self, range_start: u64, len: u64, offset: u64) -> SpResult<()> {
+        let mut class_b = std::collections::HashMap::new();
+        class_b.insert("GetObject".into(), 1u64);
+        let _ = UsageSync::record_local_delta(UsageDelta {
+            class_a: Default::default(),
+            class_b,
+            ingress_bytes: 0,
+            egress_bytes: len,
+            added_storage_bytes: 0,
+            deleted_storage_bytes: 0,
+        });
+        mutate_transfer(self.id, |transfer| {
+            transfer.bytes_done = offset;
+        })?;
+        emit_download(
+            self.app,
+            &DownloadEvent::ChunkDone {
+                transfer_id: self.id.to_string(),
+                range_start,
+                len,
+            },
+        );
+        Ok(())
+    }
+
+    fn cancelled(&mut self) -> SpResult<()> {
+        let _ = transition_transfer(self.id, TransferStateEvent::CancelConfirm);
+        mutate_transfer(self.id, |transfer| {
+            transfer.last_error = Some(cancelled_error());
+        })?;
+        emit_download(
+            self.app,
+            &DownloadEvent::Cancelled {
+                transfer_id: self.id.to_string(),
+            },
+        );
+        Ok(())
     }
 }
 
