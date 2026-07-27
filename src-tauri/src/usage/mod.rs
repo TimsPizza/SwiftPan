@@ -1,6 +1,6 @@
 use crate::types::*;
 pub mod http_instrument;
-use crate::{r2_client, sp_backend::SpBackend};
+use crate::{sp_backend::SpBackend, storage};
 use chrono::NaiveDate;
 // use directories::ProjectDirs;
 use once_cell::sync::Lazy;
@@ -165,10 +165,10 @@ impl UsageSync {
         };
 
         let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-        let client = r2_client::build_client(&bundle.r2).await?;
+        let operator = storage::build_operator(&bundle.r2).await?;
         let key = format!("{}{}.json", ANALYTICS_PREFIX, date);
 
-        let (mut day, etag) = match r2_client::get_object_bytes_opt(&client, &key).await? {
+        let (mut day, etag) = match read_usage_object_optional(&operator, &key).await? {
             Some((bytes, etag)) => {
                 let parsed: DailyLedger = serde_json::from_slice(&bytes).unwrap_or(DailyLedger {
                     date: date.into(),
@@ -185,7 +185,7 @@ impl UsageSync {
                 (parsed, etag)
             }
             None => {
-                let seeded = initial_ledger_with_baseline(&client, date).await?;
+                let seeded = initial_ledger_with_baseline(&operator, date).await?;
                 let seed_bytes = serde_json::to_vec(&seeded).map_err(|e| SpError {
                     kind: ErrorKind::NotRetriable,
                     message: format!("serialize empty ledger failed: {e}"),
@@ -193,7 +193,7 @@ impl UsageSync {
                     context: None,
                     at: chrono::Utc::now().timestamp_millis(),
                 })?;
-                r2_client::put_object_bytes(&client, &key, seed_bytes, None, true).await?;
+                write_usage_object(&operator, &key, seed_bytes, None, true).await?;
                 (seeded, None)
             }
         };
@@ -231,7 +231,7 @@ impl UsageSync {
             context: None,
             at: chrono::Utc::now().timestamp_millis(),
         })?;
-        r2_client::put_object_bytes(&client, &key, day_bytes, etag, false).await?;
+        write_usage_object(&operator, &key, day_bytes, etag, false).await?;
 
         // Clear local
         let _ = fs::remove_file(p);
@@ -252,12 +252,12 @@ impl UsageSync {
         let is_current_month = prefix == today_month;
 
         let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-        let client = r2_client::build_client(&bundle.r2).await?;
+        let operator = storage::build_operator(&bundle.r2).await?;
 
         // List existing objects for this month via OpenDAL
         let list_prefix = format!("{}{}-", ANALYTICS_PREFIX, prefix);
         let mut days_present: Vec<u32> = vec![];
-        let l = client.op.list(&list_prefix).await.map_err(|e| SpError {
+        let l = operator.list(&list_prefix).await.map_err(|e| SpError {
             kind: ErrorKind::RetryableNet,
             message: format!("list (usage month): {e}"),
             retry_after_ms: Some(500),
@@ -284,7 +284,7 @@ impl UsageSync {
             if is_current_month && day == today_day {
                 // Always fetch today's record fresh
                 let key = format!("{}{}-{:02}.json", ANALYTICS_PREFIX, prefix, day);
-                if let Ok((bytes, _)) = r2_client::get_object_bytes(&client, &key).await {
+                if let Ok((bytes, _)) = read_usage_object(&operator, &key).await {
                     if let Ok(v) = serde_json::from_slice::<DailyLedger>(&bytes) {
                         out.push(v);
                     }
@@ -296,7 +296,7 @@ impl UsageSync {
                 continue;
             }
             let key = format!("{}{}-{:02}.json", ANALYTICS_PREFIX, prefix, day);
-            if let Ok((bytes, _)) = r2_client::get_object_bytes(&client, &key).await {
+            if let Ok((bytes, _)) = read_usage_object(&operator, &key).await {
                 if let Ok(v) = serde_json::from_slice::<DailyLedger>(&bytes) {
                     out.push(v.clone());
                     cache.days.insert(day, v);
@@ -444,7 +444,7 @@ fn write_usage_state(date: &str) -> SpResult<()> {
 }
 
 async fn initial_ledger_with_baseline(
-    client: &crate::r2_client::R2Client,
+    operator: &opendal::Operator,
     date: &str,
 ) -> SpResult<DailyLedger> {
     let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|e| SpError {
@@ -455,10 +455,10 @@ async fn initial_ledger_with_baseline(
         at: chrono::Utc::now().timestamp_millis(),
     })?;
 
-    let baseline_storage = if let Some(prev) = latest_ledger_before(client, parsed).await? {
+    let baseline_storage = if let Some(prev) = latest_ledger_before(operator, parsed).await? {
         prev.storage_bytes
     } else {
-        compute_bucket_total_storage(client).await?
+        compute_bucket_total_storage(operator).await?
     };
 
     Ok(DailyLedger {
@@ -476,7 +476,7 @@ async fn initial_ledger_with_baseline(
 }
 
 async fn latest_ledger_before(
-    client: &crate::r2_client::R2Client,
+    operator: &opendal::Operator,
     date: NaiveDate,
 ) -> SpResult<Option<DailyLedger>> {
     let mut probe = date;
@@ -486,7 +486,7 @@ async fn latest_ledger_before(
         };
         probe = prev;
         let key = format!("{}{}.json", ANALYTICS_PREFIX, probe.format("%Y-%m-%d"));
-        if let Some((bytes, _)) = r2_client::get_object_bytes_opt(client, &key).await? {
+        if let Some((bytes, _)) = read_usage_object_optional(operator, &key).await? {
             if let Ok(ledger) = serde_json::from_slice::<DailyLedger>(&bytes) {
                 return Ok(Some(ledger));
             }
@@ -495,9 +495,9 @@ async fn latest_ledger_before(
     Ok(None)
 }
 
-async fn compute_bucket_total_storage(client: &crate::r2_client::R2Client) -> SpResult<u64> {
+async fn compute_bucket_total_storage(operator: &opendal::Operator) -> SpResult<u64> {
     let mut total: u64 = 0;
-    let l = client.op.list("").await.map_err(|e| SpError {
+    let l = operator.list("").await.map_err(|e| SpError {
         kind: ErrorKind::RetryableNet,
         message: format!("list (total storage): {e}"),
         retry_after_ms: Some(500),
@@ -509,12 +509,74 @@ async fn compute_bucket_total_storage(client: &crate::r2_client::R2Client) -> Sp
         if path.ends_with('/') {
             continue;
         }
-        if let Ok(meta) = client.op.stat(path).await {
+        if let Ok(meta) = operator.stat(path).await {
             let sz = meta.content_length();
             total = total.saturating_add(sz);
         }
     }
     Ok(total)
+}
+
+async fn read_usage_object(
+    operator: &opendal::Operator,
+    key: &str,
+) -> SpResult<(Vec<u8>, Option<String>)> {
+    read_usage_object_optional(operator, key)
+        .await?
+        .ok_or_else(|| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("GetObject: not found: {key}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })
+}
+
+async fn read_usage_object_optional(
+    operator: &opendal::Operator,
+    key: &str,
+) -> SpResult<Option<(Vec<u8>, Option<String>)>> {
+    match operator.read(key).await {
+        Ok(data) => {
+            let etag = operator
+                .stat(key)
+                .await
+                .ok()
+                .and_then(|metadata| metadata.etag().map(str::to_string));
+            Ok(Some((data.to_vec(), etag)))
+        }
+        Err(error) if matches!(error.kind(), opendal::ErrorKind::NotFound) => Ok(None),
+        Err(error) => Err(SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("GetObject: {error}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        }),
+    }
+}
+
+async fn write_usage_object(
+    operator: &opendal::Operator,
+    key: &str,
+    bytes: Vec<u8>,
+    if_match: Option<String>,
+    if_none_match: bool,
+) -> SpResult<()> {
+    // Preserve the current behavior: OpenDAL's plain write does not apply
+    // these conditions. Correct conditional writes require a separate bugfix.
+    let _ = (if_match, if_none_match);
+    operator
+        .write(key, bytes)
+        .await
+        .map(|_| ())
+        .map_err(|error| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("PutObject: {error}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
