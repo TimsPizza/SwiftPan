@@ -89,20 +89,22 @@ pub fn run() {
             if let Err(e) = crate::download::init(&app.handle()) {
                 crate::logger::warn("app", &format!("download init failed: {}", e.message));
             }
-            // Pre-build a global R2 client if credentials are available, in background.
+            // Pre-build the storage operator if credentials are available.
             tauri::async_runtime::spawn(async move {
                 if let Ok(bundle) = crate::sp_backend::SpBackend::get_decrypted_bundle_if_unlocked()
                 {
-                    crate::logger::info("app", "prebuilding R2 client at startup");
+                    crate::logger::info("app", "prebuilding storage operator at startup");
                     // Soft timeout so app doesn't stall if construction hangs
-                    let build = crate::r2_client::build_client(&bundle.r2);
+                    let build = crate::storage::build_operator(&bundle.r2);
                     match tokio::time::timeout(std::time::Duration::from_secs(10), build).await {
-                        Ok(Ok(_)) => crate::logger::info("app", "prebuild R2 client ok"),
+                        Ok(Ok(_)) => crate::logger::info("app", "prebuild storage operator ok"),
                         Ok(Err(e)) => crate::logger::error(
                             "app",
-                            &format!("prebuild R2 client error: {}", e.message),
+                            &format!("prebuild storage operator error: {}", e.message),
                         ),
-                        Err(_) => crate::logger::error("app", "prebuild R2 client timed out"),
+                        Err(_) => {
+                            crate::logger::error("app", "prebuild storage operator timed out")
+                        }
                     }
                 } else {
                     crate::logger::info("app", "no unlocked credentials at startup; skip prebuild");
