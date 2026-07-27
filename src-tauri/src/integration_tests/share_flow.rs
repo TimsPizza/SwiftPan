@@ -1,17 +1,13 @@
-use crate::r2_client::R2Client;
 use crate::share::{
     load_ledger_with_cache, prepend_share_entry, save_ledger_with_cache, ShareEntry, ShareLedger,
     STATIC_SHARE_PATH,
 };
 use opendal::services::Memory;
 
-fn memory_client() -> R2Client {
-    R2Client {
-        op: opendal::Operator::new(Memory::default())
-            .expect("memory service should build")
-            .finish(),
-        bucket: "integration-test".into(),
-    }
+fn memory_client() -> opendal::Operator {
+    opendal::Operator::new(Memory::default())
+        .expect("memory service should build")
+        .finish()
 }
 
 fn entry(key: &str, url: &str) -> ShareEntry {
@@ -41,7 +37,6 @@ async fn share_ledger_is_persisted_remotely_and_cached_locally() {
         .expect("share ledger should persist");
 
     let remote_bytes = client
-        .op
         .read(STATIC_SHARE_PATH)
         .await
         .expect("remote share ledger should exist")
@@ -56,7 +51,6 @@ async fn share_ledger_is_persisted_remotely_and_cached_locally() {
     assert!(cache_path.exists());
 
     client
-        .op
         .delete(STATIC_SHARE_PATH)
         .await
         .expect("remote fixture should delete");
@@ -87,7 +81,6 @@ async fn forced_share_refresh_treats_remote_ledger_as_authoritative() {
         updated_at_ms: 1,
     };
     client
-        .op
         .write(
             STATIC_SHARE_PATH,
             serde_json::to_vec(&remote).expect("remote ledger should serialize"),
@@ -148,7 +141,6 @@ async fn recording_a_share_updates_remote_history_and_enforces_its_bound() {
 
     let persisted: ShareLedger = serde_json::from_slice(
         &client
-            .op
             .read(STATIC_SHARE_PATH)
             .await
             .expect("remote history should remain readable")

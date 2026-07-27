@@ -2,6 +2,7 @@ use crate::types::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub(crate) const STATIC_SHARE_PATH: &str = "analytics/static/share.json";
 
@@ -42,16 +43,13 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-async fn load_ledger(
-    client: &crate::r2_client::R2Client,
-    force_refresh: bool,
-) -> SpResult<ShareLedger> {
+async fn load_ledger(operator: &opendal::Operator, force_refresh: bool) -> SpResult<ShareLedger> {
     let local_cache = cache_path().ok();
-    load_ledger_with_cache(client, force_refresh, local_cache.as_deref()).await
+    load_ledger_with_cache(operator, force_refresh, local_cache.as_deref()).await
 }
 
 pub(crate) async fn load_ledger_with_cache(
-    client: &crate::r2_client::R2Client,
+    operator: &opendal::Operator,
     force_refresh: bool,
     local_cache: Option<&Path>,
 ) -> SpResult<ShareLedger> {
@@ -71,8 +69,8 @@ pub(crate) async fn load_ledger_with_cache(
         }
     }
     // Load from remote
-    let remote = match crate::r2_client::get_object_bytes(client, STATIC_SHARE_PATH).await {
-        Ok((bytes, _)) => serde_json::from_slice::<ShareLedger>(&bytes).unwrap_or_default(),
+    let remote = match operator.read(STATIC_SHARE_PATH).await {
+        Ok(bytes) => serde_json::from_slice::<ShareLedger>(&bytes.to_vec()).unwrap_or_default(),
         Err(_) => ShareLedger::default(),
     };
     // Update cache timestamp and persist locally
@@ -87,13 +85,13 @@ pub(crate) async fn load_ledger_with_cache(
     Ok(v)
 }
 
-async fn save_ledger(client: &crate::r2_client::R2Client, ledger: &ShareLedger) -> SpResult<()> {
+async fn save_ledger(operator: &opendal::Operator, ledger: &ShareLedger) -> SpResult<()> {
     let local_cache = cache_path().ok();
-    save_ledger_with_cache(client, ledger, local_cache.as_deref()).await
+    save_ledger_with_cache(operator, ledger, local_cache.as_deref()).await
 }
 
 pub(crate) async fn save_ledger_with_cache(
-    client: &crate::r2_client::R2Client,
+    operator: &opendal::Operator,
     ledger: &ShareLedger,
     local_cache: Option<&Path>,
 ) -> SpResult<()> {
@@ -106,7 +104,16 @@ pub(crate) async fn save_ledger_with_cache(
         context: None,
         at: now_ms(),
     })?;
-    crate::r2_client::put_object_bytes(client, STATIC_SHARE_PATH, bytes, None, false).await?;
+    operator
+        .write(STATIC_SHARE_PATH, bytes)
+        .await
+        .map_err(|error| SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("PutObject: {error}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: now_ms(),
+        })?;
     // save cache
     if let Some(p) = local_cache {
         if let Some(parent) = p.parent() {
@@ -125,18 +132,28 @@ pub(crate) fn prepend_share_entry(ledger: &mut ShareLedger, entry: ShareEntry) {
 }
 
 pub async fn generate_share_link(params: ShareParams) -> SpResult<ShareLink> {
-    // Build client and presign
+    // Build the storage operator and presign.
     let bundle = crate::sp_backend::SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = crate::r2_client::build_client(&bundle.r2).await?;
-    let (url, expires_at_ms) = crate::r2_client::presign_get_url(
-        &client,
-        &params.key,
-        params.ttl_secs,
-        params.download_filename.clone(),
-    )
-    .await?;
+    let operator = crate::storage::build_operator(&bundle.r2).await?;
+    let url = operator
+        .presign_read(&params.key, Duration::from_secs(params.ttl_secs))
+        .await
+        .map_err(|error| SpError {
+            kind: ErrorKind::NotRetriable,
+            message: format!("Presign failed: {error}"),
+            retry_after_ms: None,
+            context: None,
+            at: now_ms(),
+        })?
+        .uri()
+        .to_string();
+    // Response-content-disposition must be part of the signature. Keep the
+    // current behavior of ignoring this option until it is implemented safely.
+    let _ = params.download_filename.as_deref();
+    let expires_at_ms =
+        (chrono::Utc::now() + chrono::Duration::seconds(params.ttl_secs as i64)).timestamp_millis();
     // Update remote + cache ledger (force refresh to reduce conflicts)
-    let mut ledger = load_ledger(&client, true).await?;
+    let mut ledger = load_ledger(&operator, true).await?;
     let entry = ShareEntry {
         key: params.key.clone(),
         url: url.clone(),
@@ -146,13 +163,13 @@ pub async fn generate_share_link(params: ShareParams) -> SpResult<ShareLink> {
         download_filename: params.download_filename.clone(),
     };
     prepend_share_entry(&mut ledger, entry);
-    let _ = save_ledger(&client, &ledger).await;
+    let _ = save_ledger(&operator, &ledger).await;
     Ok(ShareLink { url, expires_at_ms })
 }
 
 pub async fn list_share_entries() -> SpResult<Vec<ShareEntry>> {
     let bundle = crate::sp_backend::SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = crate::r2_client::build_client(&bundle.r2).await?;
-    let v = load_ledger(&client, false).await?;
+    let operator = crate::storage::build_operator(&bundle.r2).await?;
+    let v = load_ledger(&operator, false).await?;
     Ok(v.items)
 }
