@@ -15,6 +15,54 @@ use tauri::Emitter;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
+fn inferred_content_type(key: &str, explicit: Option<&str>) -> String {
+    if let Some(value) = explicit.map(str::trim).filter(|value| !value.is_empty()) {
+        return value.to_string();
+    }
+
+    let extension = std::path::Path::new(key)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+
+    match extension.as_deref() {
+        Some("arw") => "image/x-sony-arw",
+        Some("cr2") => "image/x-canon-cr2",
+        Some("cr3") => "image/x-canon-cr3",
+        Some("dng") => "image/x-adobe-dng",
+        Some("nef") => "image/x-nikon-nef",
+        Some("orf") => "image/x-olympus-orf",
+        Some("raf") => "image/x-fuji-raf",
+        Some("rw2") => "image/x-panasonic-rw2",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("pdf") => "application/pdf",
+        Some("txt") => "text/plain",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+async fn open_upload_writer(
+    operator: &opendal::Operator,
+    key: &str,
+    content_type: Option<&str>,
+    content_disposition: Option<&str>,
+) -> Result<opendal::Writer, opendal::Error> {
+    let resolved_content_type = inferred_content_type(key, content_type);
+    let mut writer = operator
+        .writer_with(key)
+        .content_type(&resolved_content_type);
+    if let Some(value) = content_disposition
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        writer = writer.content_disposition(value);
+    }
+    writer.await
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewUploadParams {
     pub key: String,
@@ -370,7 +418,14 @@ pub async fn start_upload_stream(
             }
             let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
             let client = r2_client::build_client(&bundle.r2).await?;
-            let mut writer = client.op.writer(&params.key).await.map_err(|e| SpError {
+            let mut writer = open_upload_writer(
+                &client.op,
+                &params.key,
+                params.content_type.as_deref(),
+                params.content_disposition.as_deref(),
+            )
+            .await
+            .map_err(|e| SpError {
                 kind: ErrorKind::RetryableNet,
                 message: format!("open writer: {e}"),
                 retry_after_ms: Some(500),
@@ -524,6 +579,7 @@ pub async fn start_upload_android_uri(
     key: String,
     uri: String,
     part_size: u64,
+    content_type: Option<String>,
 ) -> SpResult<String> {
     use std::io::Read;
     use tauri_plugin_android_fs::AndroidFsExt as _;
@@ -583,13 +639,15 @@ pub async fn start_upload_android_uri(
 
             let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
             let client = r2_client::build_client(&bundle.r2).await?;
-            let mut writer = client.op.writer(&key).await.map_err(|e| SpError {
-                kind: ErrorKind::RetryableNet,
-                message: format!("open writer: {e}"),
-                retry_after_ms: Some(500),
-                context: None,
-                at: now_ms(),
-            })?;
+            let mut writer = open_upload_writer(&client.op, &key, content_type.as_deref(), None)
+                .await
+                .map_err(|e| SpError {
+                    kind: ErrorKind::RetryableNet,
+                    message: format!("open writer: {e}"),
+                    retry_after_ms: Some(500),
+                    context: None,
+                    at: now_ms(),
+                })?;
             transition_upload(
                 &id_spawn,
                 TransferStateEvent::Run(TransferPhase::UploadingRemote),
@@ -927,7 +985,14 @@ async fn run_upload(
     let _size = meta.len();
 
     // Streaming upload via OpenDAL writer
-    let mut writer = client.op.writer(&params.key).await.map_err(|e| SpError {
+    let mut writer = open_upload_writer(
+        &client.op,
+        &params.key,
+        params.content_type.as_deref(),
+        params.content_disposition.as_deref(),
+    )
+    .await
+    .map_err(|e| SpError {
         kind: ErrorKind::RetryableNet,
         message: format!("open writer: {e}"),
         retry_after_ms: Some(500),
@@ -1241,3 +1306,6 @@ pub fn remove(id: &str) -> SpResult<()> {
     g.remove(id);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

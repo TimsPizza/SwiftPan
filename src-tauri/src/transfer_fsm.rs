@@ -299,3 +299,193 @@ pub fn apply_transfer_event(
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(kind: TransferKind, current: &TransferState, phase: TransferPhase) -> TransferState {
+        apply_transfer_event(kind, current, TransferStateEvent::Run(phase))
+            .expect("transition should succeed")
+    }
+
+    #[test]
+    fn upload_happy_path_reaches_completed() {
+        let mut state = TransferState::queued(TransferKind::Upload);
+        state = run(TransferKind::Upload, &state, TransferPhase::PreparingSource);
+        state = run(TransferKind::Upload, &state, TransferPhase::UploadingRemote);
+        state = run(
+            TransferKind::Upload,
+            &state,
+            TransferPhase::FinalizingRemote,
+        );
+        state = apply_transfer_event(TransferKind::Upload, &state, TransferStateEvent::Complete)
+            .expect("finalized upload should complete");
+
+        assert_eq!(state.lifecycle, TransferLifecycle::Completed);
+        assert_eq!(state.phase, None);
+    }
+
+    #[test]
+    fn download_happy_path_reaches_completed() {
+        let mut state = TransferState::queued(TransferKind::Download);
+        state = run(
+            TransferKind::Download,
+            &state,
+            TransferPhase::PreparingTarget,
+        );
+        state = run(
+            TransferKind::Download,
+            &state,
+            TransferPhase::DownloadingRemote,
+        );
+        state = run(
+            TransferKind::Download,
+            &state,
+            TransferPhase::MaterializingTarget,
+        );
+        state = apply_transfer_event(TransferKind::Download, &state, TransferStateEvent::Complete)
+            .expect("materialized download should complete");
+
+        assert_eq!(state.lifecycle, TransferLifecycle::Completed);
+        assert_eq!(state.phase, None);
+    }
+
+    #[test]
+    fn queued_transfer_cannot_skip_its_first_phase() {
+        let state = TransferState::queued(TransferKind::Upload);
+        let result = apply_transfer_event(
+            TransferKind::Upload,
+            &state,
+            TransferStateEvent::Run(TransferPhase::UploadingRemote),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn upload_cannot_enter_download_phase() {
+        let state = TransferState::queued(TransferKind::Upload);
+        let result = apply_transfer_event(
+            TransferKind::Upload,
+            &state,
+            TransferStateEvent::Run(TransferPhase::PreparingTarget),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pause_is_idempotent_and_resume_preserves_phase() {
+        let running = run(
+            TransferKind::Download,
+            &TransferState::queued(TransferKind::Download),
+            TransferPhase::PreparingTarget,
+        );
+        let paused =
+            apply_transfer_event(TransferKind::Download, &running, TransferStateEvent::Pause)
+                .expect("running download should pause");
+        let paused_again =
+            apply_transfer_event(TransferKind::Download, &paused, TransferStateEvent::Pause)
+                .expect("pausing twice should be harmless");
+        let resumed = run(
+            TransferKind::Download,
+            &paused_again,
+            TransferPhase::PreparingTarget,
+        );
+
+        assert_eq!(paused, paused_again);
+        assert_eq!(resumed.lifecycle, TransferLifecycle::Running);
+        assert_eq!(resumed.phase, Some(TransferPhase::PreparingTarget));
+    }
+
+    #[test]
+    fn cancel_request_is_idempotent_until_confirmed() {
+        let running = run(
+            TransferKind::Upload,
+            &TransferState::queued(TransferKind::Upload),
+            TransferPhase::PreparingSource,
+        );
+        let cancelling = apply_transfer_event(
+            TransferKind::Upload,
+            &running,
+            TransferStateEvent::CancelRequest,
+        )
+        .expect("running upload should start cancelling");
+        let cancelling_again = apply_transfer_event(
+            TransferKind::Upload,
+            &cancelling,
+            TransferStateEvent::CancelRequest,
+        )
+        .expect("repeated cancel request should be harmless");
+        let cancelled = apply_transfer_event(
+            TransferKind::Upload,
+            &cancelling_again,
+            TransferStateEvent::CancelConfirm,
+        )
+        .expect("cancellation should be confirmable");
+
+        assert_eq!(cancelling, cancelling_again);
+        assert_eq!(cancelled.lifecycle, TransferLifecycle::Cancelled);
+        assert_eq!(cancelled.phase, None);
+    }
+
+    #[test]
+    fn active_transfer_can_fail_but_terminal_transfer_cannot_restart() {
+        let running = run(
+            TransferKind::Upload,
+            &TransferState::queued(TransferKind::Upload),
+            TransferPhase::PreparingSource,
+        );
+        let failed = apply_transfer_event(TransferKind::Upload, &running, TransferStateEvent::Fail)
+            .expect("active upload should be able to fail");
+        let restart = apply_transfer_event(
+            TransferKind::Upload,
+            &failed,
+            TransferStateEvent::Run(TransferPhase::PreparingSource),
+        );
+
+        assert_eq!(failed.lifecycle, TransferLifecycle::Failed);
+        assert_eq!(failed.phase, None);
+        assert!(restart.is_err());
+    }
+
+    #[test]
+    fn transfer_cannot_complete_before_final_phase() {
+        let running = run(
+            TransferKind::Download,
+            &TransferState::queued(TransferKind::Download),
+            TransferPhase::PreparingTarget,
+        );
+        let result = apply_transfer_event(
+            TransferKind::Download,
+            &running,
+            TransferStateEvent::Complete,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn string_round_trips_reject_unknown_persisted_values() {
+        assert_eq!(
+            TransferKind::from_str(TransferKind::Upload.as_str()).expect("known kind should parse"),
+            TransferKind::Upload
+        );
+        assert_eq!(
+            TransferLifecycle::from_str(TransferLifecycle::Paused.as_str())
+                .expect("known lifecycle should parse"),
+            TransferLifecycle::Paused
+        );
+        assert_eq!(
+            TransferPhase::from_opt_str(Some(
+                TransferPhase::DownloadingRemote.as_str().to_string()
+            ))
+            .expect("known phase should parse"),
+            Some(TransferPhase::DownloadingRemote)
+        );
+        assert!(TransferKind::from_str("teleport").is_err());
+        assert!(TransferLifecycle::from_str("almost_done").is_err());
+        assert!(TransferPhase::from_opt_str(Some("compressing".into())).is_err());
+    }
+}

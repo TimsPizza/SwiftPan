@@ -127,3 +127,6 @@ pub async fn settings_get() -> SpResult<AppSettings> {
 pub async fn settings_set(settings: AppSettings) -> SpResult<()> {
     set(settings)
 }
+
+#[cfg(test)]
+mod tests;

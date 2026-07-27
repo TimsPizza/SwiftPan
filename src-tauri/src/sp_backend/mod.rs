@@ -1065,3 +1065,6 @@ fn current_state() -> BackendState {
         is_credential_valid: is_credential_completed,
     }
 }
+
+#[cfg(test)]
+mod tests;

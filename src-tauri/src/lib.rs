@@ -149,3 +149,6 @@ pub mod transfer_fsm;
 pub mod types;
 pub mod upload;
 pub mod usage;
+
+#[cfg(test)]
+pub(crate) mod test_support;

@@ -166,3 +166,6 @@ async fn gen_video_thumb_linux(
 ) -> SpResult<Vec<u8>> {
     Err(err_not_implemented("Linux video thumbnail not implemented"))
 }
+
+#[cfg(test)]
+mod tests;

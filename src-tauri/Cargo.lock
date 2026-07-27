@@ -4919,7 +4919,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "swift-pan"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -4952,6 +4952,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-persisted-scope",
  "tauri-plugin-sql",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

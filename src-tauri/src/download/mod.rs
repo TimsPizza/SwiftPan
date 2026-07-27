@@ -260,7 +260,9 @@ fn download_stage_dir() -> SpResult<PathBuf> {
 }
 
 fn part_path_for(temp_path: &Path) -> PathBuf {
-    temp_path.with_extension("part")
+    let mut part_name = temp_path.as_os_str().to_os_string();
+    part_name.push(".part");
+    PathBuf::from(part_name)
 }
 
 fn last_fail_reason_for(
@@ -275,6 +277,21 @@ fn last_fail_reason_for(
 
 fn should_keep_failed_artifacts(reason: Option<&ErrorKind>) -> bool {
     matches!(reason, Some(ErrorKind::RetryableNet))
+}
+
+fn lifecycle_after_restart(lifecycle: &TransferLifecycle) -> TransferLifecycle {
+    match lifecycle {
+        TransferLifecycle::Queued | TransferLifecycle::Running => TransferLifecycle::Paused,
+        TransferLifecycle::Cancelling => TransferLifecycle::Cancelled,
+        other => other.clone(),
+    }
+}
+
+fn next_download_range(offset: u64, total: u64, chunk_size: u64) -> Option<std::ops::Range<u64>> {
+    if offset >= total || chunk_size == 0 {
+        return None;
+    }
+    Some(offset..offset.saturating_add(chunk_size).min(total))
 }
 
 async fn cleanup_download_artifacts(temp_path: &Path) {
@@ -589,16 +606,7 @@ pub fn init(app: &tauri::AppHandle) -> SpResult<()> {
                     paused,
                     cancelled,
                     worker_active: false,
-                    lifecycle_state: if matches!(
-                        snapshot.lifecycle_state,
-                        TransferLifecycle::Cancelling
-                    ) {
-                        TransferLifecycle::Cancelled
-                    } else if pause_on_recover {
-                        TransferLifecycle::Paused
-                    } else {
-                        snapshot.lifecycle_state.clone()
-                    },
+                    lifecycle_state: lifecycle_after_restart(&snapshot.lifecycle_state),
                     phase: snapshot.phase.clone(),
                     created_at_ms: snapshot.created_at_ms,
                     updated_at_ms: now_ms(),
@@ -852,12 +860,13 @@ async fn run_download(app: &tauri::AppHandle, id: &str, recovered: bool) -> SpRe
                 was_paused = false;
             }
 
-            let end = (offset + chunk - 1).min(total.saturating_sub(1));
-            let range_start = offset;
+            let range = next_download_range(offset, total, chunk)
+                .ok_or_else(|| err_invalid("invalid download range"))?;
+            let range_start = range.start;
             let data = client
                 .op
                 .read_with(&key)
-                .range(range_start..(end + 1))
+                .range(range)
                 .await
                 .map_err(|e| SpError {
                     kind: ErrorKind::RetryableNet,
@@ -1233,3 +1242,6 @@ pub fn remove(transfer_id: &str) -> SpResult<()> {
     }
     transfer_db::delete_snapshot(transfer_id)
 }
+
+#[cfg(test)]
+mod tests;

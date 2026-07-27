@@ -268,3 +268,6 @@ pub async fn log_get_status() -> SpResult<serde_json::Value> {
         "file_size_bytes": file_size_bytes,
     }))
 }
+
+#[cfg(test)]
+mod tests;

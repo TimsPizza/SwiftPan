@@ -284,3 +284,6 @@ impl HttpFetch for InstrumentedReqwest {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

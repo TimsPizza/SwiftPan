@@ -733,14 +733,18 @@ pub async fn android_upload_from_uri(
         .get("part_size")
         .and_then(|v| v.as_u64())
         .unwrap_or(8 * 1024 * 1024);
+    let content_type = params
+        .get("content_type")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     #[cfg(target_os = "android")]
     {
-        crate::upload::start_upload_android_uri(app, key, uri, part_size).await
+        crate::upload::start_upload_android_uri(app, key, uri, part_size, content_type).await
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (app, key, uri, part_size);
+        let _ = (app, key, uri, part_size, content_type);
         Err(err_not_implemented("android_upload_from_uri"))
     }
 }
@@ -1343,3 +1347,6 @@ pub async fn ui_status_bar_height() -> SpResult<i32> {
         Ok(0)
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -110,6 +110,14 @@ pub fn init(app: &tauri::AppHandle) -> SpResult<()> {
 }
 
 pub fn upsert_snapshot(snapshot: &TransferSnapshot) -> SpResult<()> {
+    let snapshot = snapshot.clone();
+    run_db(async move {
+        let pool = load_pool().await?;
+        upsert_snapshot_in_pool(&pool, &snapshot).await
+    })
+}
+
+async fn upsert_snapshot_in_pool(pool: &Pool<Sqlite>, snapshot: &TransferSnapshot) -> SpResult<()> {
     let last_error_json = snapshot
         .last_error
         .as_ref()
@@ -165,40 +173,45 @@ ON CONFLICT(transfer_id) DO UPDATE SET
   created_at_ms = excluded.created_at_ms,
   updated_at_ms = excluded.updated_at_ms
 "#;
-    run_db(async move {
-        let pool = load_pool().await?;
-        sqlx::query(query)
-            .bind(snapshot.transfer_id.clone())
-            .bind(snapshot.kind.as_str())
-            .bind(snapshot.key.clone())
-            .bind(snapshot.lifecycle_state.as_str())
-            .bind(phase)
-            .bind(bytes_total)
-            .bind(bytes_done)
-            .bind(rate_bps)
-            .bind(last_error_json)
-            .bind(last_fail_reason)
-            .bind(snapshot.dest_path.clone())
-            .bind(snapshot.android_tree_uri.clone())
-            .bind(snapshot.android_relative_path.clone())
-            .bind(snapshot.temp_path.clone())
-            .bind(snapshot.expected_etag.clone())
-            .bind(snapshot.observed_etag.clone())
-            .bind(snapshot.created_at_ms)
-            .bind(snapshot.updated_at_ms)
-            .execute(&pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    })
+    sqlx::query(query)
+        .bind(snapshot.transfer_id.clone())
+        .bind(snapshot.kind.as_str())
+        .bind(snapshot.key.clone())
+        .bind(snapshot.lifecycle_state.as_str())
+        .bind(phase)
+        .bind(bytes_total)
+        .bind(bytes_done)
+        .bind(rate_bps)
+        .bind(last_error_json)
+        .bind(last_fail_reason)
+        .bind(snapshot.dest_path.clone())
+        .bind(snapshot.android_tree_uri.clone())
+        .bind(snapshot.android_relative_path.clone())
+        .bind(snapshot.temp_path.clone())
+        .bind(snapshot.expected_etag.clone())
+        .bind(snapshot.observed_etag.clone())
+        .bind(snapshot.created_at_ms)
+        .bind(snapshot.updated_at_ms)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(())
 }
 
 pub fn get_snapshot(transfer_id: &str) -> SpResult<Option<TransferSnapshot>> {
     let transfer_id = transfer_id.to_string();
     run_db(async move {
         let pool = load_pool().await?;
-        let row = sqlx::query(
-            r#"
+        get_snapshot_in_pool(&pool, &transfer_id).await
+    })
+}
+
+async fn get_snapshot_in_pool(
+    pool: &Pool<Sqlite>,
+    transfer_id: &str,
+) -> SpResult<Option<TransferSnapshot>> {
+    let row = sqlx::query(
+        r#"
 SELECT
   transfer_id,
   kind,
@@ -221,13 +234,12 @@ SELECT
 FROM transfer_snapshots
 WHERE transfer_id = ?
             "#,
-        )
-        .bind(transfer_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(db_err)?;
-        row.map(row_to_snapshot).transpose()
-    })
+    )
+    .bind(transfer_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(db_err)?;
+    row.map(row_to_snapshot).transpose()
 }
 
 pub fn list_active_snapshots() -> SpResult<Vec<TransferSnapshot>> {
@@ -474,5 +486,123 @@ fn json_err(err: impl std::fmt::Display) -> SpError {
         retry_after_ms: None,
         context: None,
         at: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+
+    async fn open_test_pool(path: &std::path::Path) -> Pool<Sqlite> {
+        let options =
+            SqliteConnectOptions::from_str(&format!("sqlite://{}", path.to_string_lossy()))
+                .expect("temporary sqlite URL should parse")
+                .create_if_missing(true);
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("temporary sqlite database should open")
+    }
+
+    async fn apply_test_migrations(pool: &Pool<Sqlite>) {
+        for migration in migrations() {
+            sqlx::raw_sql(migration.sql)
+                .execute(pool)
+                .await
+                .expect("migration should apply");
+        }
+    }
+
+    fn interrupted_download_snapshot() -> TransferSnapshot {
+        TransferSnapshot {
+            transfer_id: "download-restart-1".into(),
+            kind: TransferKind::Download,
+            key: "camera/DSC00001.ARW".into(),
+            lifecycle_state: TransferLifecycle::Running,
+            phase: Some(TransferPhase::DownloadingRemote),
+            bytes_total: Some(9_000_000),
+            bytes_done: 4_194_307,
+            rate_bps: 1_000_000,
+            last_error: None,
+            last_fail_reason: None,
+            dest_path: Some("/downloads/DSC00001.ARW".into()),
+            android_tree_uri: None,
+            android_relative_path: None,
+            temp_path: Some("/downloads/DSC00001.ARW.part".into()),
+            expected_etag: Some("\"original-etag\"".into()),
+            observed_etag: Some("\"original-etag\"".into()),
+            created_at_ms: 100,
+            updated_at_ms: 200,
+        }
+    }
+
+    #[test]
+    fn sqlite_integer_conversion_rejects_silent_corruption() {
+        assert_eq!(
+            u64_to_i64(i64::MAX as u64).expect("max i64 should fit"),
+            i64::MAX
+        );
+        assert!(u64_to_i64(i64::MAX as u64 + 1).is_err());
+        assert_eq!(i64_to_u64(0).expect("zero should fit"), 0);
+        assert!(i64_to_u64(-1).is_err());
+    }
+
+    #[test]
+    fn migrations_keep_recovery_fields_in_the_schema() {
+        let sql = migrations()
+            .into_iter()
+            .map(|migration| migration.sql)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for required in [
+            "transfer_id",
+            "lifecycle_state",
+            "phase",
+            "bytes_total",
+            "bytes_done",
+            "temp_path",
+            "expected_etag",
+            "observed_etag",
+        ] {
+            assert!(
+                sql.contains(required),
+                "recovery schema unexpectedly lost {required}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_download_survives_database_close_and_reopen() {
+        let directory = tempfile::tempdir().expect("temporary directory should exist");
+        let database_path = directory.path().join("transfers.sqlite3");
+        let first_process_pool = open_test_pool(&database_path).await;
+        apply_test_migrations(&first_process_pool).await;
+        let expected = interrupted_download_snapshot();
+
+        upsert_snapshot_in_pool(&first_process_pool, &expected)
+            .await
+            .expect("first process should persist interrupted transfer");
+        first_process_pool.close().await;
+
+        let restarted_process_pool = open_test_pool(&database_path).await;
+        let recovered = get_snapshot_in_pool(&restarted_process_pool, &expected.transfer_id)
+            .await
+            .expect("restarted process should query transfer")
+            .expect("interrupted transfer should still exist");
+
+        assert_eq!(recovered.transfer_id, expected.transfer_id);
+        assert_eq!(recovered.kind, TransferKind::Download);
+        assert_eq!(recovered.lifecycle_state, TransferLifecycle::Running);
+        assert_eq!(recovered.phase, Some(TransferPhase::DownloadingRemote));
+        assert_eq!(recovered.bytes_total, expected.bytes_total);
+        assert_eq!(recovered.bytes_done, expected.bytes_done);
+        assert_eq!(recovered.dest_path, expected.dest_path);
+        assert_eq!(recovered.temp_path, expected.temp_path);
+        assert_eq!(recovered.expected_etag, expected.expected_etag);
+        assert_eq!(recovered.observed_etag, expected.observed_etag);
     }
 }

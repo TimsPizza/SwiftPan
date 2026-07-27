@@ -505,3 +505,6 @@ pub async fn invalidate_cached_client() {
     *w = None;
     crate::logger::info("r2", "R2 client cache invalidated");
 }
+
+#[cfg(test)]
+mod tests;
