@@ -1,19 +1,19 @@
 //! Remote-object Tauri commands.
 //!
-//! This module owns bridge logging, credential-to-client coordination, list
-//! retry policy, protected deletion checks, thumbnail cleanup, and R2 sanity
-//! dispatch. It must not implement the R2 client itself or own transfers,
-//! sharing, platform access, credentials, or usage commands.
+//! This module owns command argument/default handling, credential-to-storage
+//! coordination, TLS retry dispatch, and bridge logging. Object projection,
+//! deletion rules, thumbnail cleanup, and usage effects belong to the
+//! application-level `objects` module.
 
-use crate::r2_client;
 use crate::sp_backend::SpBackend;
-use crate::types::{ErrorKind, FileEntry, ListPage, SpError, SpResult, ANALYTICS_PREFIX};
+use crate::types::{FileEntry, ListPage, SpResult};
+use crate::{objects, storage};
 
 #[tauri::command]
 pub async fn r2_sanity_check() -> SpResult<()> {
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
-    let result = r2_client::sanity_check(&client).await;
+    let operator = storage::build_operator(&bundle.r2).await?;
+    let result = storage::sanity_check(&operator).await;
     if let Err(error) = &result {
         crate::logger::error(
             "bridge",
@@ -38,21 +38,21 @@ pub async fn list_objects(
         ),
     );
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
+    let operator = storage::build_operator(&bundle.r2).await?;
     let prefix = prefix.unwrap_or_default();
     let mut result =
-        r2_client::list_objects(&client, &prefix, token.clone(), max_keys.unwrap_or(1000)).await;
+        objects::list_objects(&operator, &prefix, token.clone(), max_keys.unwrap_or(1000)).await;
     if let Err(error) = &result {
         let message = error.message.to_lowercase();
         if message.contains("unknownissuer") || message.contains("invalid peer certificate") {
             crate::logger::warn(
                 "bridge",
-                "list_objects TLS error; invalidating cached R2 client and retrying once",
+                "list_objects TLS error; invalidating cached storage operator and retrying once",
             );
-            r2_client::invalidate_cached_client().await;
-            let retry_client = r2_client::build_client(&bundle.r2).await?;
+            storage::invalidate_cached_operator().await;
+            let retry_operator = storage::build_operator(&bundle.r2).await?;
             result =
-                r2_client::list_objects(&retry_client, &prefix, token, max_keys.unwrap_or(1000))
+                objects::list_objects(&retry_operator, &prefix, token, max_keys.unwrap_or(1000))
                     .await;
         }
     }
@@ -75,19 +75,18 @@ pub async fn list_all_objects(max_total: Option<i32>) -> SpResult<Vec<FileEntry>
         &format!("list_all_objects max_total={max_total:?}"),
     );
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
-    let mut result = r2_client::list_all_objects_flat(&client, max_total.unwrap_or(10_000)).await;
+    let operator = storage::build_operator(&bundle.r2).await?;
+    let mut result = objects::list_all_objects(&operator, max_total.unwrap_or(10_000)).await;
     if let Err(error) = &result {
         let message = error.message.to_lowercase();
         if message.contains("unknownissuer") || message.contains("invalid peer certificate") {
             crate::logger::warn(
                 "bridge",
-                "list_all_objects TLS error; invalidating cached R2 client and retrying once",
+                "list_all_objects TLS error; invalidating cached storage operator and retrying once",
             );
-            r2_client::invalidate_cached_client().await;
-            let retry_client = r2_client::build_client(&bundle.r2).await?;
-            result =
-                r2_client::list_all_objects_flat(&retry_client, max_total.unwrap_or(10_000)).await;
+            storage::invalidate_cached_operator().await;
+            let retry_operator = storage::build_operator(&bundle.r2).await?;
+            result = objects::list_all_objects(&retry_operator, max_total.unwrap_or(10_000)).await;
         }
     }
     if let Err(error) = &result {
@@ -101,27 +100,16 @@ pub async fn list_all_objects(max_total: Option<i32>) -> SpResult<Vec<FileEntry>
 
 #[tauri::command]
 pub async fn delete_object(key: String) -> SpResult<String> {
-    if key.starts_with(ANALYTICS_PREFIX) {
-        return Err(SpError {
-            kind: ErrorKind::NotRetriable,
-            message: "deleting analytics files is prohibited".into(),
-            retry_after_ms: None,
-            context: None,
-            at: chrono::Utc::now().timestamp_millis(),
-        });
-    }
+    objects::validate_delete_key(&key)?;
     crate::logger::info("bridge", &format!("delete_object key={key}"));
     let bundle = SpBackend::get_decrypted_bundle_if_unlocked()?;
-    let client = r2_client::build_client(&bundle.r2).await?;
-    let result = r2_client::delete_object(&client, &key).await;
+    let operator = storage::build_operator(&bundle.r2).await?;
+    let result = objects::delete_object(&operator, &key).await;
     if let Err(error) = &result {
         crate::logger::error(
             "bridge",
             &format!("delete_object error: key={key} err={}", error.message),
         );
-    } else if !crate::thumbnail::is_thumbnail_key(&key) {
-        let _ = r2_client::delete_object(&client, &crate::thumbnail::thumbnail_key_for(&key)).await;
-        let _ = crate::transfer_db::delete_thumbnail_cache(&key);
     }
     result
 }
