@@ -12,6 +12,45 @@ pub fn is_thumbnail_key(key: &str) -> bool {
     key.starts_with(THUMBNAIL_PREFIX)
 }
 
+pub async fn generate_and_store(
+    operator: &opendal::Operator,
+    object_key: &str,
+    source_path: &str,
+    max_px: u32,
+    max_bytes: usize,
+) -> SpResult<Option<String>> {
+    let Some(bytes) = generate_thumbnail_bytes(source_path, max_px, max_bytes).await? else {
+        return Ok(None);
+    };
+    let key = thumbnail_key_for(object_key);
+    operator.write(&key, bytes).await.map_err(|error| SpError {
+        kind: ErrorKind::RetryableNet,
+        message: format!("PutObject: {error}"),
+        retry_after_ms: Some(500),
+        context: None,
+        at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    Ok(Some(key))
+}
+
+pub async fn read_stored(
+    operator: &opendal::Operator,
+    object_key: &str,
+) -> SpResult<Option<Vec<u8>>> {
+    let key = thumbnail_key_for(object_key);
+    match operator.read(&key).await {
+        Ok(bytes) => Ok(Some(bytes.to_vec())),
+        Err(error) if matches!(error.kind(), opendal::ErrorKind::NotFound) => Ok(None),
+        Err(error) => Err(SpError {
+            kind: ErrorKind::RetryableNet,
+            message: format!("ReadObject: {error}"),
+            retry_after_ms: Some(500),
+            context: None,
+            at: chrono::Utc::now().timestamp_millis(),
+        }),
+    }
+}
+
 // Public entry: generate JPEG thumbnail bytes under given constraints.
 // - max_px: bounding box size (e.g., 128)
 // - max_bytes: soft cap (e.g., 16 KiB). We'll best-effort fit; if impossible, return Err.
